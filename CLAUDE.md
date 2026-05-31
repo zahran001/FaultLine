@@ -64,6 +64,17 @@ expects. Keep it this way.
 
 ---
 
+## Open items
+
+- **Open (resolve in Phase 2):** Calibrated discharge curve is lower than the plan's
+  placeholder (real cell mean ~3.54 V vs assumed 3.81 V). Healthy pack baseline may sit
+  near/below the P0A1B threshold (350 V). When building the simulator, reconcile the SOC
+  start range and/or the P0A1B threshold against the actual calibrated healthy pack-voltage
+  band so a healthy vehicle never trips P0A1B. Decide deliberately: lower the threshold to
+  match real data, or constrain SOC start.
+
+---
+
 ## Workflow
 - After each phase, run `pytest` from the repo root and report results before moving on.
 - Commit per phase with a clear message (e.g. `feat: phase 2 simulator + fault profiles`).
