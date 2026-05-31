@@ -1,0 +1,7 @@
+numpy
+pandas
+pytest
+fastapi
+uvicorn
+opentelemetry-api
+opentelemetry-sdk
