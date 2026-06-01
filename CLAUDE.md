@@ -52,7 +52,7 @@ expects. Keep it this way.
 ---
 
 ## Resolved decisions (do not relitigate)
-1. 5 subsystems, 9 DTCs. README states this exact count.
+1. 5 subsystems, 8 DTCs. README states this exact count.
 2. `P0A78` stays; backed by `InverterDegradation` profile + a test.
 3. Slope + z-score run in parallel, routed by fault shape (see #5 above).
 4. Fault slopes match their physical story. CoolantBlockage = pump seizure
@@ -72,6 +72,13 @@ expects. Keep it this way.
   start range and/or the P0A1B threshold against the actual calibrated healthy pack-voltage
   band so a healthy vehicle never trips P0A1B. Decide deliberately: lower the threshold to
   match real data, or constrain SOC start.
+  - **Phase 1 status:** P0A1B threshold provisionally set to 340 V. `tests/test_registry.py`
+    has a *guard-rail* test (`test_p0a1b_threshold_in_safe_band`) asserting only `op == "lt"`
+    and `300 <= value < 350` (excludes the known-bad 350) — deliberately NOT `== 340`, so a
+    legitimate Phase 2 retune doesn't break it.
+  - **Phase 2 to-do:** add the *real* test — "a healthy vehicle never trips P0A1B" — asserted
+    against the simulator's healthy pack-voltage distribution, not the registry constant. That
+    is the correctness check; the Phase 1 band test is only a revert-to-350 tripwire.
 
 ---
 

@@ -202,8 +202,9 @@ This registry is your single source of truth. The simulator emits these codes, t
 
 > **RESOLVED (Decision 2):** `P0A78` stays. The simulator now emits `inverter_efficiency`
 > (below), and an `InverterDegradation` fault profile (Phase 2) drives it below the `0.88`
-> threshold so the DTC is backed by both a profile and a test. Every DTC in the registry now
-> has a corresponding fault profile.
+> threshold so the DTC is backed by both a profile and a test. Every *fault-driven* DTC has a
+> corresponding fault profile; P0A1B (pack voltage weak) and P0AFA (SoH low) are threshold-only
+> — they have triggers but no fault profile and no Phase 4 test.
 
 ---
 
@@ -635,9 +636,11 @@ Week 6  → Phase 6 (OpenTelemetry + Grafana) + polish
 ## Resolved Decisions
 
 1. **Subsystem count** — RESOLVED: 5 subsystems. Added `charging` / `P0C2E` (Charge Port
-   Temperature High). README states "5 subsystems, 9 DTCs."
+   Temperature High). README states "5 subsystems, 8 DTCs." (The registry has 8 entries;
+   earlier "9 DTCs" prose was a miscount — see the registry block above.)
 2. **`inverter_efficiency`** — RESOLVED: keep `P0A78`; backed by the `InverterDegradation`
-   fault profile and a test. Every DTC now has a profile.
+   fault profile and a test. Every *fault-driven* DTC has a profile; P0A1B and P0AFA are
+   threshold-only (triggers but no fault profile / no test).
 3. **Statistical layer on trending faults** — RESOLVED: slope detection (15-tick window,
    0.20 °C/tick threshold) for trending faults, z-score for spike/step faults, run in
    parallel. Thresholds data-backed by `thermal_detector_comparison.py`. Thermal test
