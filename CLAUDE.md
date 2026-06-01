@@ -84,40 +84,46 @@ expects. Keep it this way.
     (the real correctness check: healthy pack_voltage >= the registry threshold across 1000
     ticks, read from the registry so it tracks any future re-reconciliation).
 
-- **Phase 3 thermal / slope-detector note** (from Phase 2 fault-profile work). Two parts —
-  keep them separate; Part A is fact, Part B is an unmade decision, do not inherit it by accident.
+- **RESOLVED (Phase 3 step 1): slope detector = 30-tick window / 0.30 °C/tick / 3 consecutive
+  crossings.** Single source: `src/slope_detector_config.py`; regression guard:
+  `tests/test_slope_calibration.py`.
 
-  **Part A — validated, lockable (carry forward as fact):**
-  - The 0.20 °C/tick slope threshold on a 15-tick window was dry-run against **real
-    `sim.tick()` temperature readings** (discharge-curve + I²R baseline + per-tick noise +
-    `ThermalRunawayPrecursor`'s `+0.4*t` ramp) — NOT the synthetic trace from
-    `scripts/thermal_detector_comparison.py`. It fires on the thermal ramp. So 0.20 / 15-tick
-    is validated against the *real simulator* at the Phase 2/3 boundary, not just the
-    comparison script.
-  - Seed-stable Phase 2 claim: `ThermalRunawayPrecursor` produces a temperature slope
-    **≈ 0.4 °C/tick over a 60-tick window** (mean 0.405 across 8 seeds). This is the robust,
-    ramp-dominated figure — the one `test_fault_profiles.py::test_thermal_runaway_slope_in_expected_range`
-    actually asserts (band [0.30, 0.50]).
+  **RETRACTION — the earlier "0.20/15-tick is validated" claim was WRONG.** A prior version of
+  this note stated 0.20 °C/tick on a 15-tick window was "validated against the real simulator,
+  fires on the ramp" and marked it as locked fact. That is false; do not rebuild on it. Why it
+  was wrong:
+  - The 0.20/15-tick value came from `scripts/thermal_detector_comparison.py`, whose synthetic
+    `generate_trace()` uses a clean healthy baseline of `35 + normal(0, 0.5)` — std 0.5 °C. That
+    is **not** the real simulator. Real healthy temperature is `25 + current**2 * k + noise`
+    with `current = normal(120, 15)` re-rolled every tick, so the I²R term swings ~±3.5 °C/tick:
+    healthy temperature has **std ~3.76 °C** and tick-to-tick jumps averaging **~4 °C**.
+  - Consequently healthy 15-tick linear-fit slopes have **std ~0.214** and exceed 0.20 about
+    **17.6%** of the time — the threshold sat *inside* the healthy noise. Run against the REAL
+    simulator, a 0.20/15-tick detector fired on **100% of healthy vehicles** (both 5-point and
+    full-15 warm-up). The earlier "~t=5–6 fire" was noise luck on a 5-point warm-up, not real
+    detection (crossing slopes of 1.295 / 0.595 vs the true ramp ~0.4).
 
-  **Part B — deliberate Phase 3 decision (do NOT inherit by accident):**
-  - The exact first-fire tick is **NOT pinned**. A preview showed ~t=5–6, but that leans on
-    the plan's 5-point warm-up rule (`detect_trend` fires on as few as 5 points) AND on noise
-    luck at the short window — early-window slope *crossings* were noise-dominated, not
-    ramp-dominated (observed crossing slopes of 1.295 and 0.595 vs the true ~0.4). So "fires at
-    t=5–6" is a preview, not a verified result.
-  - Phase 3 must **choose its warm-up behavior deliberately** — it's a latency-vs-robustness
-    tradeoff:
-    * 5-point warm-up → early detection (~t=5–6) but short-window slope crossings are partly
-      noise-driven.
-    * require full 15 ticks → noise-robust slope but no fire before t=15.
-  - **Specific risk to check before keeping the 5-point rule:** a HEALTHY vehicle's temperature
-    over ~5 noisy points can also throw a slope > 0.20 by chance → short-window false positives.
-    The comparison script's "healthy slopes within ±0.05" was measured over a *fuller* window;
-    the **short-window healthy false-positive rate is UNVERIFIED**. Phase 3 must measure it (run
-    healthy seeded vehicles through `detect_trend` under whatever warm-up rule is chosen and
-    confirm no false fires) before adopting the 5-point warm-up. This is the failure mode the
-    early-fire result quietly introduces — it interacts with both `test_detection_latency` and
-    `test_no_false_positives`.
+  **Corrected, measured reality (locked config):**
+  - A 15-tick window cannot separate fault from healthy noise at any threshold (best case still
+    ~34% healthy FP). A **30-tick window** shrinks the healthy-slope variance enough to separate.
+  - **window=30, threshold=0.30 °C/tick, consec=3** → **0.00% healthy false positives over 1000
+    trials**; `ThermalRunawayPrecursor` fires on all 8 seeds at **t≈32**. Firing requires a full
+    window, so warm-up is effectively the full 30 ticks (no short-window noise fires).
+  - `ThermalRunawayPrecursor`'s mature ramp slope is still ~0.4 °C/tick over a long window — that
+    part of the old note was fine; it's the *threshold/window/healthy-FP* claim that was wrong.
+
+- **RESOLVED: the 30 s `test_detection_latency` target governs the RULE-BASED layer only, not
+  trending/slope faults.** Confirmed against the plan's own tests (docs/plan.md):
+  - `test_detection_latency` injects `CoolantBlockage` and asserts `timestamp < 30` on
+    `ENGINE.run(...)` where `ENGINE = RuleBasedDiagnostics()` — i.e. it times a hard-threshold
+    rule-based DTC (P0C73 crosses 4.0 by ~t=21). It never touches the slope layer.
+  - The thermal ramp has its own test, `test_thermal_precursor_caught_by_slope_layer`, which
+    asserts only that it *fires* within 120 ticks — **no `timestamp < 30` bound**. The plan
+    deliberately routes the ramp to the slope layer with no latency target.
+  - So trending faults detected by rate-of-rise have a **window-bound latency floor**
+    (~window + consec ≈ 33 ticks) and are NOT held to the 30 s target. Phase 4 must NOT assert
+    the thermal ramp is caught within 30 s, and the locked slope config must NOT be retuned to
+    force that — it would reintroduce the healthy false positives above.
 
 ---
 
