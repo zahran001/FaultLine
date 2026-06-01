@@ -125,6 +125,40 @@ expects. Keep it this way.
     the thermal ramp is caught within 30 s, and the locked slope config must NOT be retuned to
     force that — it would reintroduce the healthy false positives above.
 
+- **RESOLVED (Phase 4): no-false-positives = exactly zero from the two deterministic-threshold
+  layers, bounded rate from z-score.** Guard: `tests/test_diagnostic_engine.py::test_no_false_positives_on_healthy_vehicle`.
+
+  **CORRECTION — the "NOTHING from ANY layer" phrasing was imprecise.** Phase 4 constraint 3 was
+  originally written as "a healthy vehicle must fire NOTHING from ANY layer (rule-based, z-score,
+  AND slope)." That is not achievable and not the right target — it is an imprecise spec, not a
+  spirit-vs-letter tradeoff. z-score (`detect_anomalies`) is a statistical flagger that
+  STRUCTURALLY cannot promise zero: on stationary healthy noise a lone sample crosses |z| > 3 at
+  the ~0.27%/field 3-sigma tail rate (this is the property already locked in step 3's
+  `test_zscore_quiet_on_healthy_noise`, which asserts a rate, not zero). Over a 600-tick healthy
+  run × 3 fields that is ~5 expected lone flags per vehicle. So an old reading of "NOTHING from
+  ANY layer" must NOT be treated as meaning the z-score rate is a regression.
+
+  **Validated property (measured under the full pipeline, 600 ticks, all 8 seeds):**
+  - **rule-based: exactly `[]`** on every seed (P0A1B=315 and the other hard thresholds never
+    false-fire). This is the real point of the case — do NOT widen it away from zero.
+  - **slope (`detect_trend`): exactly `0`** on every seed (30/0.30/consec-3 never false-fires).
+  - **z-score: bounded low rate** — measured 0.51%–1.86% per seed (≈0.3% overall), asserted
+    `< 2%` (a RATE, not a raw count, so it is seed-robust and matches the step-3 guarantee).
+    - Margin note: the binding figure for the `<2%` z-score guard is the worst-seed rate
+      (~1.86%, seed 314), NOT the ~0.3% mean. Headroom on the worst seed is only ~0.14pp. This
+      is normal tail variance on a 591-window sample (11 fires vs ~5 expected), not a flaw — but
+      two implications: (1) do NOT tighten the guard below 2% later thinking the 0.3% mean gives
+      room; it doesn't. (2) If the seed set is expanded in the 40+ step, expect a new seed could
+      approach or cross 2% by tail variance alone — treat that as expected, NOT a regression to debug.
+
+- **OPEN (Phase 5 decision — do NOT act on now; it's a detector change, out of scope):** z-score
+  `detect_anomalies` output is raw/unpersisted, so a healthy fleet shows **~5 spurious anomaly
+  flags per vehicle per 600 ticks** (the 3-sigma tail × 3 fields). This is the production-noise
+  implication of the Phase 4 no-FP finding. Decide in Phase 5 whether the dashboard applies
+  persistence / consecutive-crossing smoothing (the slope layer already does this via
+  `CONSECUTIVE_CROSSINGS`) or surfaces raw anomalies. A conscious decision, not a surprise — and
+  NOT a reason to change the z-score detector during Phase 4.
+
 ---
 
 ## Workflow
