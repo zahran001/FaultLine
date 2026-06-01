@@ -40,13 +40,20 @@ DTC_REGISTRY = {
         "description": "Battery Pack Voltage Weak",
         "subsystem": "battery_pack",
         "severity": "high",
-        # THRESHOLD FLAGGED FOR PHASE 2 VERIFICATION:
+        # THRESHOLD RECONCILED IN PHASE 2 (closes the Phase 0 open item):
         # Phase 0 calibration found the real cell curve (~3.54 V mean) sits below the
-        # original 3.81 V placeholder, so a healthy pack at lower SOC can dip under the
-        # original 350 V trigger and cause false positives. Lowered to 340 V to sit
-        # below the real healthy band. Verify against the actual simulated healthy
-        # pack-voltage band in Phase 2 and adjust threshold and/or SOC start range there.
-        "triggers": {"pack_voltage": {"lt": 340}},
+        # original 3.81 V placeholder. Against the actual simulated healthy band
+        # (500 veh x 1000 ticks: min 322.91, p1% 330.03, mean 346.70, max 394.69 V):
+        #   - The original 350 V and the interim 340 V both false-positive on a healthy
+        #     pack — a healthy vehicle sat below 340 V ~26% of the time.
+        #   - Constraining SOC start does NOT rescue 340: SOC drains ~0.333 over a
+        #     1000-tick run and the curve is steep low-down, so even SOC_start=0.85
+        #     ends at a worst-case ~335 V, still under 340.
+        # Chosen 315 V: ~8 V below the observed healthy min (322.91), 0.000% healthy
+        # false-positive time. Favors false-positive robustness over marginal
+        # sensitivity — P0A1B is a hard voltage-weak threshold, not the early-sag
+        # detector (that role is P0AFA + the Phase 3 trend layer).
+        "triggers": {"pack_voltage": {"lt": 315}},
         "repair_procedure": [
             "Check individual cell voltages with multimeter",
             "Inspect high-voltage connectors for corrosion",

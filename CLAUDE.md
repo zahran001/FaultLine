@@ -66,19 +66,23 @@ expects. Keep it this way.
 
 ## Open items
 
-- **Open (resolve in Phase 2):** Calibrated discharge curve is lower than the plan's
-  placeholder (real cell mean ~3.54 V vs assumed 3.81 V). Healthy pack baseline may sit
-  near/below the P0A1B threshold (350 V). When building the simulator, reconcile the SOC
-  start range and/or the P0A1B threshold against the actual calibrated healthy pack-voltage
-  band so a healthy vehicle never trips P0A1B. Decide deliberately: lower the threshold to
-  match real data, or constrain SOC start.
-  - **Phase 1 status:** P0A1B threshold provisionally set to 340 V. `tests/test_registry.py`
-    has a *guard-rail* test (`test_p0a1b_threshold_in_safe_band`) asserting only `op == "lt"`
-    and `300 <= value < 350` (excludes the known-bad 350) — deliberately NOT `== 340`, so a
-    legitimate Phase 2 retune doesn't break it.
-  - **Phase 2 to-do:** add the *real* test — "a healthy vehicle never trips P0A1B" — asserted
-    against the simulator's healthy pack-voltage distribution, not the registry constant. That
-    is the correctness check; the Phase 1 band test is only a revert-to-350 tripwire.
+- **RESOLVED (Phase 2): P0A1B threshold = 315 V.** The calibrated discharge curve is
+  lower than the plan's placeholder (real cell mean ~3.54 V vs assumed 3.81 V), so a
+  healthy pack sits below the old thresholds. Reconciled against the *observed* simulated
+  healthy band (500 veh x 1000 ticks: min ~322.9 / mean ~346.7 / max ~394.7 V; an unseeded
+  run dipped to ~319.5):
+  - The original 350 V and interim 340 V both false-positive — a healthy vehicle sat below
+    340 V ~26% of the time.
+  - Constraining SOC start (the other option) does NOT rescue 340: SOC drains ~0.333 over a
+    1000-tick run and the curve is steep low-down, so even SOC_start=0.85 ends at a
+    worst-case ~335 V, still under 340. So the threshold was lowered, not the SOC range.
+  - Chose **315 V** (~8 V below the observed min) over 320 (~3 V) for tail margin: P0A1B is a
+    hard voltage-weak threshold, not the early-sag detector (that role is P0AFA + the Phase 3
+    trend layer), so false-positive robustness wins over marginal sensitivity.
+  - Tests: `test_registry.py::test_p0a1b_threshold_in_safe_band` (guard-rail: `lt` and
+    `300 <= x < 350`, still green at 315) and `test_simulator.py::test_healthy_vehicle_never_trips_p0a1b`
+    (the real correctness check: healthy pack_voltage >= the registry threshold across 1000
+    ticks, read from the registry so it tracks any future re-reconciliation).
 
 ---
 
