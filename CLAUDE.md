@@ -84,6 +84,41 @@ expects. Keep it this way.
     (the real correctness check: healthy pack_voltage >= the registry threshold across 1000
     ticks, read from the registry so it tracks any future re-reconciliation).
 
+- **Phase 3 thermal / slope-detector note** (from Phase 2 fault-profile work). Two parts —
+  keep them separate; Part A is fact, Part B is an unmade decision, do not inherit it by accident.
+
+  **Part A — validated, lockable (carry forward as fact):**
+  - The 0.20 °C/tick slope threshold on a 15-tick window was dry-run against **real
+    `sim.tick()` temperature readings** (discharge-curve + I²R baseline + per-tick noise +
+    `ThermalRunawayPrecursor`'s `+0.4*t` ramp) — NOT the synthetic trace from
+    `scripts/thermal_detector_comparison.py`. It fires on the thermal ramp. So 0.20 / 15-tick
+    is validated against the *real simulator* at the Phase 2/3 boundary, not just the
+    comparison script.
+  - Seed-stable Phase 2 claim: `ThermalRunawayPrecursor` produces a temperature slope
+    **≈ 0.4 °C/tick over a 60-tick window** (mean 0.405 across 8 seeds). This is the robust,
+    ramp-dominated figure — the one `test_fault_profiles.py::test_thermal_runaway_slope_in_expected_range`
+    actually asserts (band [0.30, 0.50]).
+
+  **Part B — deliberate Phase 3 decision (do NOT inherit by accident):**
+  - The exact first-fire tick is **NOT pinned**. A preview showed ~t=5–6, but that leans on
+    the plan's 5-point warm-up rule (`detect_trend` fires on as few as 5 points) AND on noise
+    luck at the short window — early-window slope *crossings* were noise-dominated, not
+    ramp-dominated (observed crossing slopes of 1.295 and 0.595 vs the true ~0.4). So "fires at
+    t=5–6" is a preview, not a verified result.
+  - Phase 3 must **choose its warm-up behavior deliberately** — it's a latency-vs-robustness
+    tradeoff:
+    * 5-point warm-up → early detection (~t=5–6) but short-window slope crossings are partly
+      noise-driven.
+    * require full 15 ticks → noise-robust slope but no fire before t=15.
+  - **Specific risk to check before keeping the 5-point rule:** a HEALTHY vehicle's temperature
+    over ~5 noisy points can also throw a slope > 0.20 by chance → short-window false positives.
+    The comparison script's "healthy slopes within ±0.05" was measured over a *fuller* window;
+    the **short-window healthy false-positive rate is UNVERIFIED**. Phase 3 must measure it (run
+    healthy seeded vehicles through `detect_trend` under whatever warm-up rule is chosen and
+    confirm no false fires) before adopting the 5-point warm-up. This is the failure mode the
+    early-fire result quietly introduces — it interacts with both `test_detection_latency` and
+    `test_no_false_positives`.
+
 ---
 
 ## Workflow
