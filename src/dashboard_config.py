@@ -92,7 +92,11 @@ DT = 1.0                      # [LOCKED] simulated seconds per tick. MUST match 
 TICK_INTERVAL = 0.1           # [LOCKED] wall-clock seconds between ticks (demo playback speed)
 
 # — Event tracker / z-score smoothing —————————————————————————————————————————
-EVENT_PERSISTENCE_CROSSINGS = 3   # [PROVISIONAL — Step 2] consecutive z-score crossings to OPEN an event
+EVENT_PERSISTENCE_CROSSINGS = 3   # [LOCKED — Step 2] consecutive z-score crossings to OPEN an event.
+                                  # Confirmed: 0 spurious z-score EVENTS/veh over 600 ticks x 8 seeds
+                                  # (vs ~5.75 raw flags/veh), and a SUSTAINED real signal still opens
+                                  # at tick 3. 3 consecutive same-field 3-sigma crossings ~ (0.003)^3,
+                                  # so 0 is structural, not luck.
 CLOSE_EVENT_ON_CLEAR = True       # [LOCKED] falling edge closes the open event (sets cleared_at)
 
 # — API ———————————————————————————————————————————————————————————————————————
