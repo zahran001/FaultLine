@@ -3,5 +3,6 @@ pandas
 pytest
 fastapi
 uvicorn
+httpx
 opentelemetry-api
 opentelemetry-sdk

@@ -36,6 +36,7 @@ STAGGERED FAULT INJECTION (Decision F support) — why a wrapper, not an engine 
 import fault_profiles
 from dashboard_config import DT, DEMO_FLEET
 from diagnostic_engine import RuleBasedDiagnostics, StatisticalDiagnostics
+from event_tracker import DTCEventTracker
 from simulator import VehicleSimulator
 
 # Trending faults are routed to the slope layer; this is the set of fields the slope
@@ -66,6 +67,7 @@ class _VehicleState:
         self.vehicle_id = vehicle_id
         self.sim = VehicleSimulator(vehicle_id, fault_profile=None, seed=seed)
         self.stat = StatisticalDiagnostics()
+        self.tracker = DTCEventTracker()  # per-vehicle event log (Step 2)
         # Fault is held here until its injection tick (None for healthy vehicles).
         self.pending_fault_name = fault_name
         self.inject_at_tick = inject_at_tick
@@ -118,6 +120,21 @@ class FleetManager:
                 state.vehicle_id, fields=TREND_FIELDS
             )
             state.latest_anomalies = state.stat.detect_anomalies(state.vehicle_id)
+
+            # Fold this tick's detections into the per-vehicle event log. injected_at
+            # is the tick the fault was attached (None for a healthy vehicle, which has
+            # no pending fault) so the tracker can compute detection latency. The
+            # tracker owns z-score smoothing (Step 2).
+            injected_at = (
+                state.inject_at_tick if state.pending_fault_name is not None else None
+            )
+            state.tracker.update(
+                state.latest_rule_dtcs,
+                state.latest_anomalies,
+                state.latest_trends,
+                t=reading["timestamp"],
+                injected_at=injected_at,
+            )
 
         self.tick_count += 1
 

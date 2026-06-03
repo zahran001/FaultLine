@@ -1,41 +1,52 @@
-"""Phase 5, Step 2 — DTCEventTracker: edge detection + z-score event smoothing.
+"""Phase 5, Step 2/3 — DTCEventTracker: edge detection + hysteresis + z-score smoothing.
 
 The engine's detectors report what is ACTIVE every tick. A fault that holds for 380
 ticks yields 380 identical "active" results. The timeline view needs EVENTS (a
 detection opened at t, cleared at t'), not per-tick repetition. This tracker turns
-the per-tick active sets into an edge-triggered event log, per vehicle.
+the per-tick active sets into an edge-triggered, hysteresis-smoothed event log, per
+vehicle.
 
-EDGE SEMANTICS (one event per distinct detection key):
-  - rising edge  (key newly active)      -> OPEN an event {code/field, source,
-                                            severity, opened_at, injected_at,
-                                            detection_latency_ticks}
-  - still active (key active, event open) -> NO-OP (kills the 380-duplicate problem)
-  - falling edge (key no longer active)   -> CLOSE the open event (set cleared_at)
+EDGE SEMANTICS (one event per distinct detection key), with hysteresis:
+  - OPEN  when a key has been raw-active for OPEN_CROSSINGS[source] consecutive ticks.
+  - still active (event open)  -> NO-OP (kills the 380-duplicate problem).
+  - CLOSE when an open event's key has been raw-INACTIVE for CLOSE_CROSSINGS[source]
+    consecutive ticks. A shorter dropout is BRIDGED — the event stays open.
 
-DETECTION KEY — why (source, code_or_field):
+WHY HYSTERESIS (Step 3 finding) — and why it lives HERE, not in the detector:
+  Near a threshold, real sensor noise rides on the deterministic fault ramp, so the
+  raw detector crosses back and forth for a few ticks before the fault dominates:
+    - P0C73 (coolant) opened@60, closed@61, reopened@64 — two events, one fault.
+    - EV-0005 slope produced FOUR open/close events on one ramp.
+  This is honest per-tick detector behavior, not a bug. But as a TIMELINE it is
+  noise. Hysteresis (a close gate of N consecutive under-threshold ticks) bridges the
+  brief dropouts into one clean bar. The detectors stay deterministic and unsmoothed
+  (the frozen Phase 0-4 engine is not touched); smoothing is strictly a display-layer
+  concern in this tracker. Counts are read from config (RULE_EVENT_OPEN/CLOSE_CROSSINGS,
+  EVENT_PERSISTENCE_CROSSINGS), never hardcoded.
+
+LATENCY IS NEVER WIDENED BY SMOOTHING (the critical constraint):
+  Each event records TWO timestamps:
+    - raw_first_fire_at : the first tick the DETECTOR reported this key active, raw,
+      BEFORE any hysteresis. This is the honest detection tick.
+    - opened_at         : the tick the SMOOTHED event opened (after the open gate).
+  detection_latency_ticks is computed from raw_first_fire_at - injected_at, NOT from
+  opened_at. So a clean timeline bar can never make the detection look earlier OR
+  later than it truly was. The 30 s rule-based latency target (Phase 4) and the
+  Phase 6 latency metric must read raw_first_fire_at.
+
+DETECTION KEY — (source, code_or_field):
   The three detectors are kept epistemically distinct (Decision C). A rule_based
-  P0C73, a slope on `temperature`, and a zscore on `pack_voltage` are SEPARATE
-  events that can open/close independently. Rule-based events are keyed by DTC code;
-  slope/zscore events are keyed by field. So the key is (source, identifier).
-
-Z-SCORE SMOOTHING (Decision D) — the deferred Phase 4 item, resolved HERE, above the
-detector, not inside it:
-  Raw detect_anomalies() flags fire at a bounded but nonzero rate by construction
-  (the 3-sigma tail; Phase 4 guard < 2%/field). Surfacing every raw flag as a
-  timeline event would litter a healthy fleet. Fix: a z-score flag does not OPEN an
-  event until it has persisted for EVENT_PERSISTENCE_CROSSINGS consecutive ticks —
-  mirroring the slope layer's CONSECUTIVE_CROSSINGS. This is a DISPLAY/EVENT-LAYER
-  filter: detect_anomalies is untouched and its bounded-rate behavior (the Phase 4
-  detector-level guard) still holds. Rule-based and slope detections are NOT smoothed
-  here — rule-based is deterministic, and slope already self-smooths via its own
-  consecutive-crossing logic inside detect_trend.
-
-  Persistence count is read from dashboard_config (single source), never hardcoded.
+  P0C73, a slope on `temperature`, and a zscore on `pack_voltage` are SEPARATE events
+  that open/close independently. Rule-based keyed by DTC code; slope/zscore by field.
 
 Flat imports (no package): resolved via pythonpath = ["src"] in pyproject.toml.
 """
 
-from dashboard_config import CLOSE_EVENT_ON_CLEAR, EVENT_PERSISTENCE_CROSSINGS
+from dashboard_config import (
+    EVENT_PERSISTENCE_CROSSINGS,
+    RULE_EVENT_CLOSE_CROSSINGS,
+    RULE_EVENT_OPEN_CROSSINGS,
+)
 
 # Detector source tags (match the API provenance vocabulary, Decision C).
 SOURCE_RULE = "rule_based"
@@ -51,68 +62,69 @@ CONFIDENCE = {
 
 
 class DTCEventTracker:
-    """Per-vehicle edge detector + event log. One instance per vehicle.
+    """Per-vehicle edge detector + hysteresis event log. One instance per vehicle.
 
-    Call update() once per tick AFTER the detectors have run for that tick. It
-    returns the running event log (list of event dicts, oldest first). An open event
-    has cleared_at=None; a closed event has cleared_at set to the falling-edge tick.
+    Call update() once per tick AFTER the detectors have run for that tick. It returns
+    the running event log (oldest first). An open event has cleared_at=None.
     """
 
-    def __init__(self, persistence=EVENT_PERSISTENCE_CROSSINGS):
-        # Consecutive-tick gate for z-score events (read from config by default).
-        self.persistence = persistence
-        # All events ever opened for this vehicle, oldest first.
-        self.events = []
-        # key -> index into self.events for the CURRENTLY OPEN event on that key.
-        self._open = {}
-        # z-score key -> consecutive-active run length (the smoothing counter).
-        self._zscore_runs = {}
+    def __init__(
+        self,
+        zscore_open=EVENT_PERSISTENCE_CROSSINGS,
+        rule_open=RULE_EVENT_OPEN_CROSSINGS,
+        rule_close=RULE_EVENT_CLOSE_CROSSINGS,
+    ):
+        # Per-source OPEN gate (consecutive raw-active ticks needed to open an event)
+        # and CLOSE gate (consecutive raw-inactive ticks needed to close it).
+        # z-score keeps a CLOSE gate of 1 (a per-tick statistical flag clears at once;
+        # this preserves the Step-2 measured smoothing property). Rule/slope get the
+        # Step-3 hysteresis close gate that bridges threshold-noise dropouts.
+        self._open_gate = {
+            SOURCE_RULE: rule_open,
+            SOURCE_SLOPE: rule_open,
+            SOURCE_ZSCORE: zscore_open,
+        }
+        self._close_gate = {
+            SOURCE_RULE: rule_close,
+            SOURCE_SLOPE: rule_close,
+            SOURCE_ZSCORE: 1,
+        }
+
+        self.events = []          # all events ever opened, oldest first
+        self._open = {}           # key -> index of the CURRENTLY OPEN event on that key
+        self._active_run = {}     # key -> consecutive raw-ACTIVE tick count
+        self._inactive_run = {}   # key -> consecutive raw-INACTIVE tick count (open events)
+        # key -> the detector's RAW first-fire tick for the run currently building /
+        # open. Set on the very first raw-active tick of a run; cleared when the event
+        # fully closes so a genuinely new onset gets a fresh latency.
+        self._raw_first_fire = {}
 
     # --- public API -------------------------------------------------------------
     def update(self, active_dtcs, anomalies, trends, t, injected_at=None):
         """Fold one tick's detector output into the event log; return the log.
 
-        active_dtcs : list from RuleBasedDiagnostics.run()      (keyed by "dtc")
-        anomalies   : list from StatisticalDiagnostics.detect_anomalies (keyed by "field")
-        trends      : list from StatisticalDiagnostics.detect_trend     (keyed by "field")
+        active_dtcs : list from RuleBasedDiagnostics.run()                (keyed "dtc")
+        anomalies   : list from StatisticalDiagnostics.detect_anomalies   (keyed "field")
+        trends      : list from StatisticalDiagnostics.detect_trend       (keyed "field")
         t           : current tick (simulated time)
         injected_at : tick the fault was injected (for latency), or None if unknown
         """
-        # Build this tick's active key set, with the payload needed to open an event.
+        # This tick's RAW-active key set, with the payload needed to open an event.
         active = {}
-
-        # Rule-based: keyed by DTC code, deterministic (no smoothing).
         for d in active_dtcs:
-            key = (SOURCE_RULE, d["dtc"])
-            active[key] = {
-                "source": SOURCE_RULE,
-                "code": d["dtc"],
-                "field": None,
-                "severity": d.get("severity"),
-                "description": d.get("description"),
+            active[(SOURCE_RULE, d["dtc"])] = {
+                "source": SOURCE_RULE, "code": d["dtc"], "field": None,
+                "severity": d.get("severity"), "description": d.get("description"),
             }
-
-        # Slope: keyed by field, already self-smoothed inside detect_trend.
         for tr in trends:
-            key = (SOURCE_SLOPE, tr["field"])
-            active[key] = {
-                "source": SOURCE_SLOPE,
-                "code": None,
-                "field": tr["field"],
-                "severity": None,
-                "slope": tr.get("slope"),
+            active[(SOURCE_SLOPE, tr["field"])] = {
+                "source": SOURCE_SLOPE, "code": None, "field": tr["field"],
+                "severity": None, "slope": tr.get("slope"),
             }
-
-        # Z-score: keyed by field, SMOOTHED here (persistence gate) before it counts.
-        smoothed_zscore = self._apply_zscore_smoothing(anomalies)
-        for a in smoothed_zscore:
-            key = (SOURCE_ZSCORE, a["field"])
-            active[key] = {
-                "source": SOURCE_ZSCORE,
-                "code": None,
-                "field": a["field"],
-                "severity": None,
-                "z_score": a.get("z_score"),
+        for a in anomalies:
+            active[(SOURCE_ZSCORE, a["field"])] = {
+                "source": SOURCE_ZSCORE, "code": None, "field": a["field"],
+                "severity": None, "z_score": a.get("z_score"),
             }
 
         self._reconcile(active, t, injected_at)
@@ -123,55 +135,71 @@ class DTCEventTracker:
         return [self.events[i] for i in self._open.values()]
 
     # --- internals --------------------------------------------------------------
-    def _apply_zscore_smoothing(self, anomalies):
-        """Return only z-score anomalies that have persisted >= persistence ticks.
-
-        Increments a per-field run counter while the field is flagged this tick;
-        resets it to 0 the moment the field is not flagged. A field is surfaced only
-        once its run reaches the persistence threshold — so a lone 3-sigma tail
-        crossing never opens an event. The detector output itself is unchanged.
-        """
-        flagged = {a["field"]: a for a in anomalies}
-        surfaced = []
-        # Advance / reset run counters across all fields we've ever seen plus this tick's.
-        for field in set(self._zscore_runs) | set(flagged):
-            if field in flagged:
-                self._zscore_runs[field] = self._zscore_runs.get(field, 0) + 1
-                if self._zscore_runs[field] >= self.persistence:
-                    surfaced.append(flagged[field])
-            else:
-                self._zscore_runs[field] = 0
-        return surfaced
-
     def _reconcile(self, active, t, injected_at):
-        """Open events for new keys, close events for keys that fell inactive."""
-        # Falling edges: an open event whose key is no longer active gets closed.
-        for key in list(self._open):
-            if key not in active:
-                if CLOSE_EVENT_ON_CLEAR:
-                    self.events[self._open[key]]["cleared_at"] = t
-                del self._open[key]
+        """Advance per-key run counters; open/close events through the hysteresis gates."""
+        # Union of keys we must consider this tick: active now, currently open, or
+        # mid-build (have an active run going).
+        keys = set(active) | set(self._open) | set(self._active_run)
 
-        # Rising edges: a newly-active key with no open event opens one.
-        for key, payload in active.items():
+        for key in keys:
+            source = key[0]
+            is_active = key in active
+
+            if is_active:
+                # Record the detector's RAW first-fire the instant a run begins (this
+                # is the honest detection tick, independent of the open gate).
+                if self._active_run.get(key, 0) == 0:
+                    self._raw_first_fire.setdefault(key, t)
+                self._active_run[key] = self._active_run.get(key, 0) + 1
+                self._inactive_run[key] = 0
+            else:
+                self._inactive_run[key] = self._inactive_run.get(key, 0) + 1
+                self._active_run[key] = 0
+
             if key in self._open:
-                continue  # still active -> no-op (no duplicate row)
-            event = {
-                "source": payload["source"],
-                "confidence": CONFIDENCE[payload["source"]],
-                "code": payload["code"],
-                "field": payload["field"],
-                "severity": payload["severity"],
-                "opened_at": t,
-                "cleared_at": None,
-                "injected_at": injected_at,
-                "detection_latency_ticks": (
-                    None if injected_at is None else t - injected_at
-                ),
-            }
-            # Carry detector-specific detail through for the API/UI.
-            for extra in ("description", "slope", "z_score"):
-                if extra in payload:
-                    event[extra] = payload[extra]
-            self._open[key] = len(self.events)
-            self.events.append(event)
+                # Open event: close only after enough consecutive INACTIVE ticks.
+                if (not is_active
+                        and self._inactive_run[key] >= self._close_gate[source]):
+                    # Close as of the FIRST inactive tick (when the signal truly
+                    # dropped), not the tick the gate elapsed — so cleared_at reflects
+                    # the real falling edge, with the gate only suppressing flicker.
+                    self.events[self._open[key]]["cleared_at"] = (
+                        t - self._inactive_run[key] + 1
+                    )
+                    del self._open[key]
+                    self._reset_key(key)
+            else:
+                # No open event: open once enough consecutive ACTIVE ticks accrue.
+                if is_active and self._active_run[key] >= self._open_gate[source]:
+                    self._open_event(key, active[key], t, injected_at)
+
+    def _open_event(self, key, payload, t, injected_at):
+        raw_first = self._raw_first_fire.get(key, t)
+        event = {
+            "source": payload["source"],
+            "confidence": CONFIDENCE[payload["source"]],
+            "code": payload["code"],
+            "field": payload["field"],
+            "severity": payload["severity"],
+            # opened_at = smoothed open (clean timeline bar). raw_first_fire_at =
+            # detector's true first crossing (latency basis). They differ by the open
+            # gate; latency is computed from the RAW tick so smoothing never widens it.
+            "opened_at": t,
+            "raw_first_fire_at": raw_first,
+            "cleared_at": None,
+            "injected_at": injected_at,
+            "detection_latency_ticks": (
+                None if injected_at is None else raw_first - injected_at
+            ),
+        }
+        for extra in ("description", "slope", "z_score"):
+            if extra in payload:
+                event[extra] = payload[extra]
+        self._open[key] = len(self.events)
+        self.events.append(event)
+
+    def _reset_key(self, key):
+        """Clear per-key run state after an event fully closes (fresh next onset)."""
+        self._active_run.pop(key, None)
+        self._inactive_run.pop(key, None)
+        self._raw_first_fire.pop(key, None)

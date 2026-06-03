@@ -99,6 +99,43 @@ EVENT_PERSISTENCE_CROSSINGS = 3   # [LOCKED — Step 2] consecutive z-score cros
                                   # so 0 is structural, not luck.
 CLOSE_EVENT_ON_CLEAR = True       # [LOCKED] falling edge closes the open event (sets cleared_at)
 
+# Rule-based / slope EVENT hysteresis (Step 3 finding) — DISPLAY-LAYER only.
+# The detectors stay deterministic and unsmoothed; this only governs when the TRACKER
+# opens/closes a timeline EVENT, so a one-tick threshold dropout near the crossing does
+# not close-and-reopen the bar (the P0C73 20-vs-24 flicker and the EV-0005 4-slope-events
+# artifact). CRITICAL: hysteresis NEVER moves the latency metric — the tracker also
+# records the detector's RAW first-fire tick, and detection_latency_ticks is computed
+# from THAT, not from the smoothed opened_at. So smoothing the bar cannot widen the
+# detection claim.
+#   OPEN  gate: N consecutive over-threshold ticks before an event opens.
+#   CLOSE gate: N consecutive under-threshold ticks before an open event closes
+#               (a shorter dropout is bridged — the event stays open).
+RULE_EVENT_OPEN_CROSSINGS = 1     # [LOCKED] open immediately. Rule-based onset is
+                                  # deterministic, so the first crossing IS the honest open
+                                  # (raw_first_fire_at and opened_at coincide at onset). The
+                                  # flicker was always close-side, never open — do not gate
+                                  # the open. (Slope shares this gate; detect_trend already
+                                  # self-arms via its own 3 consecutive crossings.)
+RULE_EVENT_CLOSE_CROSSINGS = 5    # [PROVISIONAL — confirm at Step 4] consecutive
+                                  # under-threshold ticks before a timeline event closes.
+                                  # PURELY COSMETIC: latency reads raw_first_fire_at, so the
+                                  # close gate cannot move any latency number or detection
+                                  # claim — it only bridges threshold-noise dropouts into one
+                                  # clean bar. Value is data-derived: just above the measured
+                                  # max noise-dropout gap (4) on the demo fleet.
+                                  #
+                                  # COUPLING (do not break silently): the close gate MUST
+                                  # exceed slope_detector_config.CONSECUTIVE_CROSSINGS
+                                  # (currently 3) to bridge the slope detector's re-arm gap —
+                                  # when detect_trend dips under threshold it resets and needs
+                                  # CONSECUTIVE_CROSSINGS fresh crossings to re-fire, producing
+                                  # inactive gaps of exactly that length. If CONSECUTIVE_CROSSINGS
+                                  # is ever retuned, this floor moves and 5 may become wrong;
+                                  # revisit here. (Same silent cross-file-dependency hazard the
+                                  # canonical-field-name contract guards against.)
+                                  # Step 4: confirm no two GENUINELY-separate episodes on the
+                                  # roster fall within 5 ticks; retag [LOCKED] if it holds.
+
 # — API ———————————————————————————————————————————————————————————————————————
 READINGS_POLL_HINT_MS = 500   # [LOCKED] suggested dashboard poll interval for /readings (advisory; client-side)
 INCLUDE_RAW_ANOMALIES_DEFAULT = False  # [LOCKED] /dtcs hides unsmoothed z-score flags unless ?include_raw_anomalies=true
