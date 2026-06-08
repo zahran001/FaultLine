@@ -66,6 +66,44 @@ def test_fleet_status_spread_after_maturation(client):
     assert by_id["EV-THERM"]["highest_severity"] is None
 
 
+def test_fleet_status_does_not_strobe(client):
+    """The acute coolant fault must flip green->red exactly ONCE and stay red.
+
+    Guards the Step-4 fix: deriving status from the smoothed open-event set (not raw
+    per-tick detections) stops the near-threshold strobe. EV-COOL is acute (blows
+    through the threshold), so once red it stays red through the watch window.
+    """
+    transitions = []
+    prev = None
+    for _ in range(130):
+        client.fleet.tick_all()
+        status = next(
+            v["status"] for v in client.get("/fleet").json()["vehicles"]
+            if v["id"] == "EV-COOL"
+        )
+        if prev is not None and status != prev:
+            transitions.append(status)
+        prev = status
+    assert transitions == ["red"], f"expected one green->red flip, got {transitions}"
+
+
+def test_active_definition_consistent_across_endpoints(client):
+    """/fleet active_fault_count, /dtcs detections, and /timeline open events all agree
+    on what is 'active' — one definition (the tracker's open-event set)."""
+    _tick(client, 130)
+    fleet_row = next(
+        v for v in client.get("/fleet").json()["vehicles"] if v["id"] == "EV-COOL"
+    )
+    dtcs = client.get("/vehicle/EV-COOL/dtcs").json()["detections"]
+    timeline = client.get("/vehicle/EV-COOL/timeline").json()["events"]
+    open_events = [e for e in timeline if e["cleared_at"] is None]
+
+    assert fleet_row["active_fault_count"] == len(dtcs) == len(open_events)
+    # And the detection shape carries both the smoothed open and the raw first fire.
+    rule = [d for d in dtcs if d["source"] == "rule_based"][0]
+    assert "raw_first_fire_at" in rule and "detected_at" in rule
+
+
 # --- /vehicle/{id}/dtcs ------------------------------------------------------------
 def test_dtcs_provenance_tags(client):
     _tick(client, 130)

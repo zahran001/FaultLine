@@ -84,22 +84,26 @@ and type is real; the slope/zscore *values* are illustrative.
   ]
 }
 ```
-- `status` ∈ {green, amber, red}. Derived by `derive_status()` from detector
-  provenance (Decision C): rule_based (a CONFIRMED_SOURCE) or any RED_SEVERITIES
-  severity ⇒ red; only slope/smoothed-zscore active ⇒ amber; nothing active ⇒ green.
-- `active_fault_count` = rule DTCs + slope trends + open (smoothed) z-score fields.
-- `highest_severity` = worst severity among active rule-based DTCs, else null
-  (slope/zscore have no registry severity, so a slope-only vehicle is amber + null).
+- `status` ∈ {green, amber, red}. Derived by `derive_status()` from the OPEN-EVENT set's
+  provenance (Decision C, D″): any confirmed-source (rule_based) open event or any
+  RED_SEVERITIES severity ⇒ red; only slope/smoothed-zscore open events ⇒ amber; no open
+  events ⇒ green.
+- `active_fault_count` = number of currently-open tracker events (one definition of
+  "active" shared with `/dtcs` and `/timeline`).
+- `highest_severity` = worst severity among open events that carry one (rule-based),
+  else null (slope/zscore have no registry severity, so a slope-only vehicle is amber +
+  null).
 
 ### `GET /vehicle/{id}/dtcs?include_raw_anomalies=false`
 ```json
 {
   "vehicle_id": "EV-0004",
-  "tick": 199,
+  "tick": 160,
   "detections": [
     { "source": "rule_based", "confidence": "confirmed",
+      "detected_at": 66.0, "raw_first_fire_at": 66.0,
       "dtc": "P0C73", "description": "Cooling System Flow Insufficient",
-      "severity": "high", "detected_at": 257.0,
+      "severity": "high",
       "repair_procedure": [
         "Check coolant level in reservoir",
         "Inspect pump for mechanical failure",
@@ -107,17 +111,26 @@ and type is real; the slope/zscore *values* are illustrative.
         "Verify thermal management controller output"
       ] },
     { "source": "slope", "confidence": "trending",
-      "field": "temperature", "slope": 0.411, "detected_at": 200.0 },
+      "detected_at": 200.0, "raw_first_fire_at": 200.0,
+      "field": "temperature", "slope": 0.411 },
     { "source": "zscore", "confidence": "advisory",
-      "field": "pack_voltage", "z_score": 3.2, "detected_at": 200.0 }
+      "detected_at": 200.0, "raw_first_fire_at": 198.0,
+      "field": "pack_voltage", "z_score": 3.2 }
   ]
 }
 ```
+- **Step-4 rewiring (completing Decision D):** detections are now shaped from the
+  tracker's OPEN EVENTS — the SAME "active" definition `/fleet` and `/timeline` use, so
+  the three endpoints can never disagree (and the Phase 6 metrics measure one thing).
+  The rule-based row is captured verbatim from the live server post-rewiring; the slope
+  and zscore rows are shape-faithful illustrations (EV-0004 had no active slope/zscore at
+  capture).
 - Each detection carries `source` (rule_based/slope/zscore) and `confidence`
-  (confirmed/trending/advisory) — the three detectors are never flattened.
-- Default returns rule-based + slope + **smoothed** z-score (fields with an open
-  zscore event). `include_raw_anomalies=true` additionally appends unsmoothed flags,
-  tagged `"confidence": "raw"`, that aren't already surfaced.
+  (confirmed/trending/advisory) — the three detectors are never flattened — plus
+  `detected_at` (smoothed open) and `raw_first_fire_at` (detector's true first crossing).
+- Default returns the open events (rule-based + slope + smoothed z-score).
+  `include_raw_anomalies=true` additionally appends unsmoothed z-score flags, tagged
+  `"confidence": "raw"`, that aren't already an open event.
 
 ### `GET /vehicle/{id}/timeline`
 ```json
@@ -231,7 +244,10 @@ React + TypeScript (hits the JavaScript requirement directly). Visual design is
 treated as a real deliverable, not boilerplate.
 
 1. **Fleet overview** — grid of vehicle cards, green/amber/red by status. The demo
-   money-shot: a card flipping amber → red as a fault matures in real time.
+   money-shot: the **fleet lighting up in physically-real staged sequence** — the amber
+   thermal card first (the dual-detector proof), then acute reds flipping in over the
+   first ~30 s. (See the Step-4 retraction below: the original "one card flips amber→red"
+   slogan was refuted by the measured fire-order and replaced.)
 2. **Vehicle detail** — live sensor readings (per-channel sparklines), active
    detections grouped by confidence (confirmed DTCs prominent with repair steps,
    trending below, advisory anomalies muted/collapsible), guided repair procedure.
@@ -254,16 +270,66 @@ treated as a real deliverable, not boilerplate.
   `DTCEventTracker` (EVENT_PERSISTENCE_CROSSINGS consecutive ticks); raw flags still
   available via `?include_raw_anomalies=true`. Detector untouched. Measured 0 spurious
   z-score events/veh on healthy (vs ~5.75 raw flags), real signals still surface.
-- **D′ — rule/slope event hysteresis:** RESOLVED (Step 3, see finding above). The same
-  display-layer pattern extended to rule-based/slope events: open gate 1, close gate
+- **D′ — rule/slope event hysteresis:** RESOLVED (Step 3 + Step 4 lock). Display-layer
+  pattern extended to rule-based/slope events: open gate 1, close gate
   `RULE_EVENT_CLOSE_CROSSINGS=5` to bridge threshold-noise flicker into one bar, with
   latency anchored to `raw_first_fire_at` so it stays a pure cosmetic. Detectors
-  untouched; close gate `[PROVISIONAL → confirm at Step 4]`.
+  untouched. Step-4 merge check confirmed and `[LOCKED]`: 5 bridges intra-episode
+  flicker (≤4-tick dropouts) but does NOT merge genuinely-separate episodes — the
+  boundary cases (gap of exactly 5) are REAL recoveries (inverter efficiency genuinely
+  returns >0.88 for 5 ticks), correctly kept separate. Roster is one-fault-per-vehicle,
+  so no multi-fault same-vehicle merge risk.
+- **D″ — "active" is the open-event set across ALL consumers:** RESOLVED (Step 4).
+  Completing Decision D (see retraction below): `/fleet` status, `active_fault_count`,
+  and `/dtcs` now read `tracker.open_events()`, the same definition `/timeline` uses.
+  Previously rule/slope were smoothed only in the timeline while status/`/dtcs` read raw
+  per-tick output — which strobed near thresholds. One definition of "active" everywhere;
+  also what makes the Phase 6 metrics trustworthy.
 - **E — polling vs SSE:** OPEN (lean polling). Decide at Step 6 against the demo.
-- **F — demo fleet roster:** OPEN until Step 4. Note: with relative-t injection,
-  EV-0006 (CellImbalance @20) doesn't fire P1A15 until ~t=208 (relative t≈188) — the
-  roster comment "red later in the run" is technically true but slow; tune injection
-  offsets at Step 4 by watching the loop.
+- **F — demo fleet roster:** RESOLVED (Step 4), `[LOCKED]` in `dashboard_config.py`.
+  Fleet-sequence framing (not single-card amber→red — retracted below). Staged offsets
+  produce: EV-0005 amber @~3.2 s (prominent, dual-detector proof), EV-0004 clean acute
+  red @~6.6 s, EV-0007 intermittent red @~12.4 s, EV-0006 slow-burn @~20.8 s, 4 healthy
+  green. Only injection offsets were staged — no profile slope touched. CellImbalance
+  cast as honest slow-burn background (Option 3), not a headline red.
+
+---
+
+## Step 4 retraction — "money-shot = one card flips amber→red" was WRONG
+
+**Retracted claim (carried in the plan, this brief, and README before Step 4):** the
+fleet-overview headline is a single card flipping amber→red as a fault matures.
+
+**Why it's wrong (measured, not asserted):** a single card doing amber→red requires the
+slope layer (amber) to fire BEFORE a rule threshold (red) on the SAME vehicle. The real
+fire-order is the reverse:
+
+| fault | rule (red) fires | slope (amber) fires |
+|---|---|---|
+| CoolantBlockage | t≈21 | t≈129 |
+| InverterDegradation | t≈55 | t≈166 |
+
+Acute faults blow through the hard threshold in ~20–55 ticks, but the temperature ramp
+they also produce is slope-detectable only after the full 30-tick window + maturation
+(~129+). And the only pure-trend fault (ThermalRunawayPrecursor) ramps `temperature`,
+which **deliberately has no hard-threshold DTC** to escalate into. So the engine's own
+routing — slope for trends, rule for thresholds, temperature with no rule DTC — STRUCTURALLY
+precludes single-card escalation. The slogan was aspirational, written before the
+fire-order was characterized; the engine is correct ("match the detector to the fault
+shape" working as intended).
+
+**Replacement:** the demo headline is the **fleet lighting up in physically-real staged
+sequence** (Decision F). This is the stronger artifact: a single color flip could be
+faked with a timer + CSS; eight independently-simulated vehicles transitioning on their
+own faults' real maturation, with timeline latencies matching the detector floors, is
+genuinely hard to fake and is the actual proof the live-loop architecture (Decision A)
+was worth building. The honest version is the more impressive version.
+
+**Not pursued:** authoring a new fault profile designed to produce a single-card
+amber→red would be physics-bending to satisfy a slogan — the same move refused for the
+0.20/15-tick slope and the CoolantBlockage latency. No seed sweep was run; the absence
+is closed on mechanism (no profile ramps a slope-routed field below a rule threshold and
+then crosses one), not pending evidence.
 
 ---
 
@@ -273,7 +339,8 @@ treated as a real deliverable, not boilerplate.
 1. FleetManager + lifespan background loop   [DONE — Step 1]
 2. DTCEventTracker + z-score smoothing + tests [DONE — Step 2]
 3. The four GET endpoints + schema freeze    [DONE — Step 3]
-4. Resolve Decisions E/F against the running system
+4. Resolve Decision F (roster) + close-gate lock + "active" single-source + money-shot
+   retraction  [DONE — Step 4]   (Decision E deferred to Step 6, polling-first)
 5. React scaffold + the three views
 6. Design polish; decide Decision E (SSE?) against the running demo
 ```

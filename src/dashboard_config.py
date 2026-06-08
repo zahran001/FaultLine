@@ -116,13 +116,13 @@ RULE_EVENT_OPEN_CROSSINGS = 1     # [LOCKED] open immediately. Rule-based onset 
                                   # flicker was always close-side, never open — do not gate
                                   # the open. (Slope shares this gate; detect_trend already
                                   # self-arms via its own 3 consecutive crossings.)
-RULE_EVENT_CLOSE_CROSSINGS = 5    # [PROVISIONAL — confirm at Step 4] consecutive
-                                  # under-threshold ticks before a timeline event closes.
+RULE_EVENT_CLOSE_CROSSINGS = 5    # [LOCKED — Step 4] consecutive under-threshold ticks
+                                  # before a timeline event closes.
                                   # PURELY COSMETIC: latency reads raw_first_fire_at, so the
                                   # close gate cannot move any latency number or detection
                                   # claim — it only bridges threshold-noise dropouts into one
                                   # clean bar. Value is data-derived: just above the measured
-                                  # max noise-dropout gap (4) on the demo fleet.
+                                  # max intra-episode noise-dropout gap (4) on the demo fleet.
                                   #
                                   # COUPLING (do not break silently): the close gate MUST
                                   # exceed slope_detector_config.CONSECUTIVE_CROSSINGS
@@ -133,8 +133,19 @@ RULE_EVENT_CLOSE_CROSSINGS = 5    # [PROVISIONAL — confirm at Step 4] consecut
                                   # is ever retuned, this floor moves and 5 may become wrong;
                                   # revisit here. (Same silent cross-file-dependency hazard the
                                   # canonical-field-name contract guards against.)
-                                  # Step 4: confirm no two GENUINELY-separate episodes on the
-                                  # roster fall within 5 ticks; retag [LOCKED] if it holds.
+                                  #
+                                  # STEP-4 MERGE CHECK (confirmed, retagged [LOCKED]): on the
+                                  # final roster, close-gate-5 bridges intra-episode flicker
+                                  # (<=4-tick dropouts) but does NOT merge any two genuinely-
+                                  # separate episodes. The boundary cases (EV-0007 P0A78 and
+                                  # EV-0006 P1A15, gaps of exactly 5) are REAL recoveries —
+                                  # inverter_efficiency genuinely returns >0.88 for 5 consecutive
+                                  # ticks (measured: 0.8806/0.9033/0.8911/0.8887/0.8900) — so
+                                  # keeping them separate is correct, not a miss. No roster pair
+                                  # has two distinct episodes within <=4 ticks that get wrongly
+                                  # merged. The roster is one-fault-per-vehicle (no multi-fault
+                                  # combo vehicle), so same-vehicle two-episode merges can only
+                                  # be one fault's own recoveries, handled correctly above.
 
 # — API ———————————————————————————————————————————————————————————————————————
 READINGS_POLL_HINT_MS = 500   # [LOCKED] suggested dashboard poll interval for /readings (advisory; client-side)
@@ -149,18 +160,54 @@ CONFIRMED_SOURCES = ("rule_based",)
 ADVISORY_SOURCES = ("slope", "zscore")
 
 # — Demo fleet roster —————————————————————————————————————————————————————————
-# [PROVISIONAL — Step 4] confirm by watching the live loop; retag [LOCKED] after.
-# Each entry: (vehicle_id, seed, fault_profile_name_or_None, inject_at_tick)
+# [LOCKED — Step 4] confirmed by watching the live loop (offsets staged for the
+# fleet-sequence demo; see WHY below). Each entry:
+#   (vehicle_id, seed, fault_profile_name_or_None, inject_at_tick)
 # fault_profile_name is resolved to the Phase 2 class by the FleetManager; None = healthy.
+#
+# WHY THESE OFFSETS (Decision F, fleet-sequence framing — NOT single-card amber→red):
+#   The plan's "money-shot = one card flips amber→red" was retracted: measured fire-order
+#   shows acute faults trip the RULE threshold (red) FAST while their temperature ramp is
+#   slope-detectable (amber) only much later, and the slope-routed field (temperature) has
+#   no rule DTC to escalate into — so no single card naturally does amber→red. The honest,
+#   stronger demo is the FLEET lighting up in physically-real staged sequence. (See
+#   docs/phase5_plan.md "Step 4 retraction".)
+#
+#   Only the INJECTION OFFSET (staging) is tuned here — never a profile slope (physics).
+#   Relative fire ticks (from injection, measured): thermal slope 32, coolant rule 21,
+#   inverter rule 55, cell-imbalance 188. OBSERVED cascade (300 ticks @ 0.1 s/tick):
+#     EV-0005 thermal  @5  -> AMBER @t=32 (~3.2 s)  FIRST + prominent, ONE stable
+#                                                   transition: the slope layer catching a
+#                                                   monotonic ramp the rule layer can't —
+#                                                   the visible proof of the dual detector.
+#     EV-0004 coolant  @45 -> RED @t=66 (~6.6 s)    clean acute anchor: a brief real
+#                                                   z-score blip @t=60 (coolant dropping
+#                                                   fast — honest signal, NOT suppressed)
+#                                                   then the rule red HOLDS (4-tick
+#                                                   borderline, bridged to one bar).
+#     EV-0007 inverter @70 -> RED @t=124 (~12.4 s)  INTERMITTENT: efficiency genuinely
+#                                                   recovers >0.88 for multi-tick stretches,
+#                                                   so it legitimately flips a few times —
+#                                                   real intermittent-fault physics, shown
+#                                                   as separate timeline episodes (correct).
+#     EV-0006 cell-imb @20 -> P1A15 @t=208 (~20.8s) SLOW-BURN background: gradual drift
+#                                                   hovering on its 0.05 threshold (~47%
+#                                                   borderline for ~60 ticks); honest
+#                                                   "detection in progress", not a headline
+#                                                   red (Option 3 casting).
+#   Casting follows the physics: only CoolantBlockage crosses cleanly (acute pump seizure);
+#   InverterDegradation (36-tick borderline) and CellImbalance (~60-tick) are honest
+#   intermittent/slow-burn cards. Offsets were NOT tuned to dodge a fault's borderline
+#   phase (that would be noise-luck chasing) — the wobble is real and shown as such.
 DEMO_FLEET = [
-    ("EV-0001", 0,    None,                       None),
-    ("EV-0002", 1,    None,                       None),
-    ("EV-0003", 7,    None,                       None),
-    ("EV-0004", 42,   "CoolantBlockage",          40),    # acute → red, populates timeline early
-    ("EV-0005", 99,   "ThermalRunawayPrecursor",  30),    # slope-only → amber (trending)
-    ("EV-0006", 314,  "CellImbalance",            20),    # gradual drift → red later in the run
-    ("EV-0007", 2718, "InverterDegradation",      50),    # slope + eventual rule-based
-    ("EV-0008", 31415, None,                      None),
+    ("EV-0001", 0,     None,                       None),
+    ("EV-0002", 1,     None,                       None),
+    ("EV-0005", 99,    "ThermalRunawayPrecursor",  5),     # AMBER first — dual-detector proof
+    ("EV-0003", 7,     None,                       None),
+    ("EV-0004", 42,    "CoolantBlockage",          45),    # acute red ~t=66
+    ("EV-0007", 2718,  "InverterDegradation",      70),    # acute red ~t=125
+    ("EV-0006", 314,   "CellImbalance",            20),    # slow-burn background ~t=208
+    ("EV-0008", 31415, None,                       None),
 ]
 # Seed set reuses the Phase 4 deterministic set [0, 1, 7, 42, 99, 314, 2718, 31415]
 # so demo behavior is reproducible and consistent with the test suite's seeds.

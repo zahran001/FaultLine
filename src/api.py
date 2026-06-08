@@ -31,85 +31,81 @@ from dashboard_config import (
     RED_SEVERITIES,
     TICK_INTERVAL,
 )
+from dtc_registry import DTC_REGISTRY
 from event_tracker import CONFIDENCE, SOURCE_RULE, SOURCE_SLOPE, SOURCE_ZSCORE
 from fleet_manager import FleetManager
 
 
-# — Status derivation (config-driven; Decision C) ————————————————————————————————
-def derive_status(rule_dtcs, trends, smoothed_anomalies):
-    """green / amber / red from detector provenance, not a flat alarm count.
+# — "Active" is the tracker's OPEN-EVENT state (single source of truth) —————————————
+# Completing Decision D: smoothing is the event layer's job and the DTCEventTracker
+# defines what is "active". z-score was already routed through it everywhere; rule-based
+# and slope were smoothed only in the timeline (an incomplete rollout — derive_status,
+# active_fault_count, and /dtcs still read raw per-tick output, which strobes near a
+# threshold). All three consumers now read open_events(), so "active" means ONE thing
+# across the whole API — which is also what makes the Phase 6 metrics trustworthy (they
+# can't measure a flicker artifact if every endpoint agrees on "active").
+#
+# NOTE this is a CLEAR-timing change, not a DETECT-timing one: an event opens at the
+# detector's raw first fire (open gate = 1 for rule/slope) and lingers up to the close
+# gate after the raw signal drops. Detection latency is unaffected — it reads
+# raw_first_fire_at, and the 30 s latency test times ENGINE.run() directly, never the
+# tracker.
 
-    red   = any confirmed-source detection (rule_based is in CONFIRMED_SOURCES),
-            OR any active detection at a RED_SEVERITIES severity.
-    amber = only advisory/trending detections (slope and/or smoothed z-score).
-    green = nothing active.
-    Reads CONFIRMED_SOURCES / RED_SEVERITIES from config; slope and zscore are the
-    ADVISORY_SOURCES and never force red on their own.
+
+def derive_status(open_events):
+    """green / amber / red from the open-event set's provenance (Decision C).
+
+    red   = any confirmed-source open event (rule_based is in CONFIRMED_SOURCES),
+            OR any open event at a RED_SEVERITIES severity.
+    amber = only advisory/trending open events (slope and/or smoothed z-score).
+    green = no open events.
     """
-    # Rule-based is a confirmed source -> any active rule-based DTC is red. (If the
-    # confirmed-source set is ever narrowed, the severity check below still catches
-    # criticals.)
-    if rule_dtcs and SOURCE_RULE in CONFIRMED_SOURCES:
+    confirmed = [e for e in open_events if e["source"] in CONFIRMED_SOURCES]
+    if confirmed:
         return "red"
-    if any(d.get("severity") in RED_SEVERITIES for d in rule_dtcs):
+    if any(e.get("severity") in RED_SEVERITIES for e in open_events):
         return "red"
-    if trends or smoothed_anomalies:
+    if open_events:
         return "amber"
     return "green"
 
 
-def _highest_severity(rule_dtcs):
-    """Worst severity among active rule-based DTCs (registry order), else None."""
+def _highest_severity(open_events):
+    """Worst severity among open events that carry one (rule-based), else None."""
     order = ["low", "medium", "high", "critical"]
-    sev = [d.get("severity") for d in rule_dtcs if d.get("severity") in order]
+    sev = [e.get("severity") for e in open_events if e.get("severity") in order]
     return max(sev, key=order.index) if sev else None
 
 
 # — Detection shaping (frozen schema; Decision C provenance tags) ————————————————
-def _rule_detection(d):
-    return {
-        "source": SOURCE_RULE,
-        "confidence": CONFIDENCE[SOURCE_RULE],
-        "dtc": d["dtc"],
-        "description": d["description"],
-        "severity": d["severity"],
-        "detected_at": d["detected_at"],
-        "repair_procedure": d["repair_procedure"],
+# Each /dtcs detection is shaped from an OPEN EVENT (not the raw per-tick detector).
+# detected_at is the smoothed bar open (opened_at); raw_first_fire_at is also carried so
+# the client can show the honest first-crossing tick if it wants.
+def _detection_from_event(event):
+    source = event["source"]
+    base = {
+        "source": source,
+        "confidence": CONFIDENCE[source],
+        "detected_at": event["opened_at"],
+        "raw_first_fire_at": event["raw_first_fire_at"],
     }
-
-
-def _slope_detection(tr, t):
-    return {
-        "source": SOURCE_SLOPE,
-        "confidence": CONFIDENCE[SOURCE_SLOPE],
-        "field": tr["field"],
-        "slope": tr["slope"],
-        "detected_at": t,
-    }
-
-
-def _zscore_detection(a, t):
-    return {
-        "source": SOURCE_ZSCORE,
-        "confidence": CONFIDENCE[SOURCE_ZSCORE],
-        "field": a["field"],
-        "z_score": a["z_score"],
-        "detected_at": t,
-    }
-
-
-def _smoothed_anomaly_fields(state):
-    """Fields with a currently-OPEN z-score event (i.e. past the persistence gate).
-
-    The /dtcs endpoint surfaces smoothed z-score detections by default; "smoothed"
-    means the tracker has an open zscore event for that field. Raw (unsmoothed)
-    anomalies are added only when explicitly requested.
-    """
-    return {
-        e["field"]
-        for e in state.tracker.open_events()
-        if e["source"] == SOURCE_ZSCORE
-    }
+    if source == SOURCE_RULE:
+        code = event["code"]
+        base.update(
+            {
+                "dtc": code,
+                "description": event.get("description"),
+                "severity": event.get("severity"),
+                # repair_procedure isn't stored on the event; re-attach from the registry
+                # (single source of truth) at shaping time.
+                "repair_procedure": DTC_REGISTRY[code]["repair_procedure"],
+            }
+        )
+    elif source == SOURCE_SLOPE:
+        base.update({"field": event["field"], "slope": event.get("slope")})
+    elif source == SOURCE_ZSCORE:
+        base.update({"field": event["field"], "z_score": event.get("z_score")})
+    return base
 
 
 def _build_app(fleet: FleetManager, run_background: bool = True) -> FastAPI:
@@ -154,20 +150,16 @@ def _build_app(fleet: FleetManager, run_background: bool = True) -> FastAPI:
 
     @app.get("/fleet")
     def get_fleet():
-        """Fleet overview — one row per vehicle, color-coded by provenance/severity."""
+        """Fleet overview — one row per vehicle, color-coded from the open-event set."""
         vehicles = []
         for vid, st in fleet.vehicles.items():
-            smoothed = _smoothed_anomaly_fields(st)
-            status = derive_status(st.latest_rule_dtcs, st.latest_trends, smoothed)
-            active_count = (
-                len(st.latest_rule_dtcs) + len(st.latest_trends) + len(smoothed)
-            )
+            open_events = st.tracker.open_events()
             vehicles.append(
                 {
                     "id": vid,
-                    "status": status,
-                    "active_fault_count": active_count,
-                    "highest_severity": _highest_severity(st.latest_rule_dtcs),
+                    "status": derive_status(open_events),
+                    "active_fault_count": len(open_events),
+                    "highest_severity": _highest_severity(open_events),
                 }
             )
         return {"tick": fleet.tick_count, "vehicles": vehicles}
@@ -179,27 +171,31 @@ def _build_app(fleet: FleetManager, run_background: bool = True) -> FastAPI:
     ):
         """Active detections for one vehicle, tagged by detector provenance.
 
-        Default: rule-based DTCs + slope trends + SMOOTHED z-score detections (those
-        with an open event). include_raw_anomalies=true also appends the unsmoothed
-        z-score flags (for the observability view).
+        Default: the tracker's OPEN events (rule-based + slope + smoothed z-score) —
+        the same "active" definition /fleet and /timeline use. include_raw_anomalies=true
+        additionally appends unsmoothed z-score flags (for the observability view) that
+        aren't already surfaced as an open event.
         """
         st = _get_state(vehicle_id)
-        t = st.latest_reading["timestamp"] if st.latest_reading else None
-        detections = [_rule_detection(d) for d in st.latest_rule_dtcs]
-        detections += [_slope_detection(tr, t) for tr in st.latest_trends]
-
-        smoothed_fields = _smoothed_anomaly_fields(st)
-        for a in st.latest_anomalies:
-            if a["field"] in smoothed_fields:
-                detections.append(_zscore_detection(a, t))
+        open_events = st.tracker.open_events()
+        detections = [_detection_from_event(e) for e in open_events]
 
         if include_raw_anomalies:
-            # Append raw flags not already surfaced as smoothed (avoid duplicates).
+            t = st.latest_reading["timestamp"] if st.latest_reading else None
+            open_zscore_fields = {
+                e["field"] for e in open_events if e["source"] == SOURCE_ZSCORE
+            }
             for a in st.latest_anomalies:
-                if a["field"] not in smoothed_fields:
-                    raw = _zscore_detection(a, t)
-                    raw["confidence"] = "raw"  # mark unsmoothed
-                    detections.append(raw)
+                if a["field"] not in open_zscore_fields:
+                    detections.append(
+                        {
+                            "source": SOURCE_ZSCORE,
+                            "confidence": "raw",  # unsmoothed, below the persistence gate
+                            "field": a["field"],
+                            "z_score": a["z_score"],
+                            "detected_at": t,
+                        }
+                    )
 
         return {"vehicle_id": vehicle_id, "tick": fleet.tick_count, "detections": detections}
 
