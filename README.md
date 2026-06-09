@@ -30,6 +30,33 @@ pip install -r requirements.txt
 pytest
 ```
 
+## Run the dashboard
+
+Backend (FastAPI) and the React dashboard run as two processes. The frontend reaches
+the backend through a Vite dev proxy (`/api/*` → `127.0.0.1:8000`), so no CORS setup.
+
+```bash
+# 1) Backend — start FRESH for the seeded demo (see frontend/README.md for why)
+cd src
+../.venv/Scripts/uvicorn.exe api:app --host 127.0.0.1 --port 8000
+
+# 2) Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173
+```
+
+**Verify** (PowerShell) — expect `200` from each:
+
+```powershell
+curl.exe -s -o NUL -w "backend %{http_code}`n" http://127.0.0.1:8000/fleet
+curl.exe -s -o NUL -w "proxy   %{http_code}`n" http://127.0.0.1:5173/api/fleet
+```
+
+Open http://127.0.0.1:5173 — at tick ~80 the fleet is mostly green with one amber
+card (EV-0005). Stop with `Ctrl+C` in each terminal. See `frontend/README.md` for
+the three views and design notes.
+
 ## Data
 
 Place NASA dataset CSVs in `data/` (git-ignored).

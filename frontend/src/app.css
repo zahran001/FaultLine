@@ -1,0 +1,128 @@
+/* App shell — header bar + main region. */
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app__bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 28px;
+  background: linear-gradient(180deg, rgba(15, 19, 24, 0.92), rgba(15, 19, 24, 0.72));
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.app__brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* a small instrument 'mark' — a notched amber bar, evokes a fault line on a gauge */
+.app__mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  border: 1px solid var(--hairline-bright);
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.app__mark-bar {
+  width: 3px;
+  height: 18px;
+  background: var(--amber);
+  box-shadow: 0 0 12px var(--amber-glow);
+  transform: skewX(-18deg);
+}
+
+.app__title {
+  font-size: 19px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+.app__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.crumb {
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  letter-spacing: 0.14em;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 2px;
+  transition: color 0.15s;
+}
+.crumb:hover { color: var(--ink-0); }
+.crumb--active { color: var(--amber); }
+.crumb__sep { color: var(--ink-3); }
+
+.app__main {
+  flex: 1;
+  padding: 28px;
+  max-width: 1480px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* shared section scaffolding */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.section-head h2 {
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  color: var(--ink-0);
+}
+
+.tick-readout {
+  font-size: 11px;
+  color: var(--ink-2);
+  letter-spacing: 0.1em;
+}
+.tick-readout b { color: var(--ink-1); font-weight: 600; }
+
+/* generic raised panel */
+.panel {
+  background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.banner-error {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--red-dim);
+  background: rgba(255, 82, 71, 0.07);
+  border-radius: var(--r-md);
+  color: var(--red);
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--ink-2);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 20px;
+  text-align: center;
+}
