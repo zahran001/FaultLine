@@ -211,3 +211,45 @@ DEMO_FLEET = [
 ]
 # Seed set reuses the Phase 4 deterministic set [0, 1, 7, 42, 99, 314, 2718, 31415]
 # so demo behavior is reproducible and consistent with the test suite's seeds.
+
+
+# — Demo-fleet SOC floor (live-run P0A1B finding) ——————————————————————————————
+# WHY THIS EXISTS (Decision-F-style roster choice; measured, not guessed):
+#   On a long-running live server the seeded-HEALTHY vehicles eventually trip a real
+#   rule-based P0A1B (pack_voltage < 315 V) and the fleet goes red. Diagnosed
+#   (scripts/p0a1b_longrun_trace.py): this is the UNBOUNDED-live-drain regime the
+#   bounded (<=1000-tick) Phase-2/4 tests never reach — NOT a regression of the
+#   `test_no_false_positives_on_healthy_vehicle` / 315-threshold properties, which
+#   were only ever measured inside their window:
+#     - The bare simulator models continuous ~120 A discharge with NO SOC floor and NO
+#       recharge, draining SOC ~0.000333/tick. Over <=1000 ticks SOC stays >=~0.27
+#       (pack >=322.91 V — the Phase-2 validated healthy min that justified 315). The
+#       live loop runs ~2150+ ticks, draining SOC to ~0 (then unphysically negative,
+#       np.interp clamps), where pack_voltage bottoms at the discharge-curve floor
+#       3.3049 V/cell x 96 = 317.27 V and per-tick NOISE (std 1.71 V pack) dips it under
+#       315 on ~9% of ticks. So P0A1B fires on noise around a bottomed-out floor, NOT a
+#       deterministic low-voltage reading (315 sits 2.27 V BELOW even the SOC=0 floor).
+#   PHYSICAL FRAMING: a parked-but-monitored fleet EV holds its charge (idle/charging) —
+#   it is not in 40-minute freefall discharge. The bare simulator's unbounded discharge
+#   is the *driving* regime; the monitored-fleet demo bounds it with a SOC floor so the
+#   live loop stays inside the band the no-FP property + 315 threshold were validated over.
+#
+# FROZEN ENGINE UNTOUCHED: this is applied LAYER-ABOVE in FleetManager.tick_all() — it
+# clamps the SOC state of the simulator instances the manager owns (exactly as the
+# manager already manages fault_profile injection), NOT inside simulator.tick(). No
+# Phase 0-4 code, the P0A1B=315 threshold, or any locked constant changes. Deterministic
+# clamp => seeded demo stays reproducible; the production seed=None simulator default is
+# untouched (the floor is a demo/monitored-fleet roster property, not an engine change).
+#
+# VALUE PROVENANCE (scripts/p0a1b_soc_floor_check.py, 8 demo seeds x 10000 ticks):
+#   0.35 is the SMALLEST floor whose long-run healthy pack_voltage min (325.13 V) stays
+#   at/above the Phase-2 validated healthy min (322.91 V) with ZERO P0A1B fires — i.e.
+#   the live loop is provably inside the exact SOC band the 315 threshold was measured
+#   over (~10 V margin to 315, exceeding the original 8 V reconciliation margin). Floor
+#   0.30 is fire-free but dips to 322.45 (just under the validated min); 0.25 to 319.78.
+DEMO_SOC_FLOOR = 0.35   # [LOCKED] confirmed against the running uvicorn server: a live
+                        # loop watched to tick 2629 (~263 s, PAST the no-floor healthy-fire
+                        # band t=2154-2379) held all 4 seeded-healthy vehicles GREEN the
+                        # whole time (EV-0001 @2629: pack 332.18 V, soc 0.3497 pinned at the
+                        # floor, P0A1B never fired), and the intended cascade was intact
+                        # (EV-0005 amber; EV-0004/0007/0006 red on their own faults).

@@ -34,7 +34,7 @@ STAGGERED FAULT INJECTION (Decision F support) — why a wrapper, not an engine 
 """
 
 import fault_profiles
-from dashboard_config import DT, DEMO_FLEET
+from dashboard_config import DT, DEMO_FLEET, DEMO_SOC_FLOOR
 from diagnostic_engine import RuleBasedDiagnostics, StatisticalDiagnostics
 from event_tracker import DTCEventTracker
 from simulator import VehicleSimulator
@@ -63,9 +63,10 @@ class _OffsetProfile:
 class _VehicleState:
     """All per-vehicle state the FleetManager owns for one vehicle."""
 
-    def __init__(self, vehicle_id, seed, fault_name, inject_at_tick):
+    def __init__(self, vehicle_id, seed, fault_name, inject_at_tick, soc_floor=None):
         self.vehicle_id = vehicle_id
         self.sim = VehicleSimulator(vehicle_id, fault_profile=None, seed=seed)
+        self.soc_floor = soc_floor
         self.stat = StatisticalDiagnostics()
         self.tracker = DTCEventTracker()  # per-vehicle event log (Step 2)
         # Fault is held here until its injection tick (None for healthy vehicles).
@@ -88,6 +89,23 @@ class _VehicleState:
             self.sim.fault_profile = _OffsetProfile(profile_cls(), self.inject_at_tick)
             self.injected = True
 
+    def _hold_soc_floor(self):
+        """Hold the simulator's SOC at/above soc_floor — a LAYER-ABOVE roster choice.
+
+        WHY (see dashboard_config.DEMO_SOC_FLOOR for the full provenance): the bare
+        simulator models continuous ~120 A discharge with no SOC floor/recharge, so an
+        UNBOUNDED live run drains a seeded-healthy vehicle to SOC~0 (then unphysically
+        below), where pack_voltage bottoms at the discharge-curve floor (~317.3 V) and
+        per-tick NOISE dips it under the 315 V P0A1B threshold — a regime the bounded
+        Phase-2/4 tests never reach. A parked-but-monitored fleet EV holds its charge; it
+        is not in 40-minute freefall discharge. Clamping the SOC of the instance the
+        manager OWNS (exactly as _maybe_inject manages fault_profile) keeps the live loop
+        inside the SOC band the no-FP property + 315 threshold were validated over, WITHOUT
+        touching the frozen simulator. Deterministic, so the seeded demo stays reproducible.
+        """
+        if self.soc_floor is not None and self.sim.soc < self.soc_floor:
+            self.sim.soc = self.soc_floor
+
 
 class FleetManager:
     """Singleton-style owner of the live fleet. One instance per process.
@@ -97,12 +115,13 @@ class FleetManager:
     dict ops); the Step 3 background task awaits TICK_INTERVAL between calls.
     """
 
-    def __init__(self, roster=DEMO_FLEET, dt=DT):
+    def __init__(self, roster=DEMO_FLEET, dt=DT, soc_floor=DEMO_SOC_FLOOR):
         self.dt = dt
+        self.soc_floor = soc_floor
         self.tick_count = 0
         self.rule_engine = RuleBasedDiagnostics()  # stateless → shared
         self.vehicles = {
-            vid: _VehicleState(vid, seed, fault_name, inject_at_tick)
+            vid: _VehicleState(vid, seed, fault_name, inject_at_tick, soc_floor=soc_floor)
             for (vid, seed, fault_name, inject_at_tick) in roster
         }
 
@@ -112,6 +131,10 @@ class FleetManager:
             state._maybe_inject()
 
             reading = state.sim.tick(self.dt)
+            # Hold the monitored vehicle's SOC in its validated band for the NEXT tick's
+            # pack_voltage (layer-above; the frozen simulator is untouched). See
+            # _hold_soc_floor / dashboard_config.DEMO_SOC_FLOOR.
+            state._hold_soc_floor()
             state.stat.update(reading)
 
             state.latest_reading = reading

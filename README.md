@@ -36,7 +36,8 @@ Backend (FastAPI) and the React dashboard run as two processes. The frontend rea
 the backend through a Vite dev proxy (`/api/*` → `127.0.0.1:8000`), so no CORS setup.
 
 ```bash
-# 1) Backend — start FRESH for the seeded demo (see frontend/README.md for why)
+# 1) Backend (FastAPI live loop — runs continuously; the seeded-healthy fleet stays
+#    green indefinitely via dashboard_config.DEMO_SOC_FLOOR, so no restart is needed)
 cd src
 ../.venv/Scripts/uvicorn.exe api:app --host 127.0.0.1 --port 8000
 

@@ -151,6 +151,80 @@ expects. Keep it this way.
       room; it doesn't. (2) If the seed set is expanded in the 40+ step, expect a new seed could
       approach or cross 2% by tail variance alone — treat that as expected, NOT a regression to debug.
 
+- **RESOLVED (Phase 5): seeded-healthy vehicles trip P0A1B on a LONG-RUNNING server —
+  unbounded live drain past the validated window (Hypothesis 1), NOT a regression of the
+  no-FP property and NOT clean "drained pack reads low" (Hypothesis 2 refuted).** Fix:
+  `dashboard_config.DEMO_SOC_FLOOR = 0.35`, applied layer-above in `FleetManager`. Guard
+  scripts: `scripts/p0a1b_longrun_trace.py`, `scripts/p0a1b_soc_floor_check.py`,
+  `scripts/p0a1b_fleet_firecheck.py`.
+
+  **The finding:** on a long-running live loop the seeded-healthy vehicles eventually fire a
+  *real* rule-based P0A1B and the fleet goes red. The earlier "restart uvicorn before
+  demoing" was a workaround that hid the question.
+
+  **Diagnosis (measured, calls `sim.tick()` — not re-derived):** this is the UNBOUNDED-drain
+  regime the bounded (≤1000-tick) Phase-2/4 tests never reach. The bare simulator models
+  continuous ~120 A discharge with NO SOC floor and NO recharge, draining SOC ~0.000333/tick.
+  Over ≤1000 ticks SOC stays ≥~0.27 (pack ≥322.91 V — the Phase-2 validated healthy min that
+  justified 315). The four healthy demo vehicles (seeds 0/1/7/31415, start SOC 0.77–0.82) only
+  cross 315 at **t≈2154–2379** (SOC≈0.03–0.09), ~215–238 s at 0.1 s/tick — far past every test.
+  So the no-FP claim was always true *within its window*; the live loop simply runs past it.
+
+  **Hypothesis 2 (a genuinely-drained pack correctly reading low) is REFUTED as the mechanism.**
+  The 315 V threshold = 3.28125 V/cell sits **2.27 V BELOW the discharge curve's own SOC=0
+  floor** (3.3049 V/cell × 96 = 317.27 V). A genuinely-drained-but-healthy pack therefore does
+  NOT deterministically read under 315 — it bottoms at 317.27 V. Only per-tick NOISE (std
+  1.71 V pack) dips it below 315, on ~9% of ticks, AND the sim keeps draining SOC into
+  nonphysical NEGATIVE territory (np.interp clamps to the floor). So the firing is noise around
+  a bottomed-out floor in an SOC regime the sim should never reach — not "the pack is empty so
+  it reads low." (This also means the Phase-2 315 reconciliation is unaffected; do NOT touch it.)
+
+  **Resolution (Decision-F-style roster choice; engine FROZEN):** a parked-but-monitored fleet
+  EV holds its charge — it is not in 40-minute freefall discharge. `DEMO_SOC_FLOOR = 0.35` holds
+  each vehicle's SOC in the validated band, applied in `FleetManager.tick_all()` by clamping the
+  SOC of the instances it owns (exactly as it manages `fault_profile` injection) — `simulator.py`,
+  the P0A1B=315 threshold, and every locked constant are untouched. Value provenance: 0.35 is the
+  smallest floor whose long-run healthy pack_voltage min (325.13 V, 8 seeds × 10000 ticks) stays
+  ≥ the validated 322.91 V with ZERO fires. **Confirmed against the running uvicorn server:**
+  watched to tick 2629 (~263 s, past the no-floor fire band) with all four healthy vehicles GREEN
+  throughout; EV-0001 @2629 pack 332.18 V, soc 0.3497 (pinned), P0A1B never fired; cascade intact.
+
+  **Provably demo-only (verifiable, not asserted):** the Phase-2/4 correctness tests instantiate
+  `VehicleSimulator` DIRECTLY — `test_simulator.py::test_healthy_vehicle_never_trips_p0a1b` (1000
+  bare `sim.tick()` ticks) and `test_diagnostic_engine.py::test_no_false_positives_on_healthy_vehicle`
+  (bare engine) — with NO FleetManager and NO floor (`soc_floor` / `DEMO_SOC_FLOOR` appear in zero
+  test files). The floor exists only in `FleetManager.tick_all()`, exercised only by `test_api.py`,
+  which ticks ≤130 (healthy SOC ~0.78 there, so the 0.35 floor never even activates) and asserts
+  nothing about drain. So the floor cannot move the drain physics those tests validate — the
+  128/128 pass is CORROBORATING evidence, not coincidence.
+
+- **FLAGGED (Phase-2 profile-scope question — an UNDESIGNED second DTC; do NOT fix now):**
+  `CellImbalance`, a profile whose designed job is to trip P1A15 (`cell_voltage_delta > 0.05`),
+  ALSO trips **P0A1B at t≈700** via its `pack_voltage −= 0.05·t` sag (the natural drain carries the
+  baseline plus the growing sag under 315; the SOC floor only raises voltage and leaves this fire
+  tick UNCHANGED, confirming it is profile-driven, not drain). This brushes against the Phase-4
+  multi-fault discipline, which holds that fault COMBINATIONS fire correctly *because they key off
+  distinct trigger fields* — whereas here a SINGLE profile incidentally satisfies a SECOND DTC's
+  trigger. It is arguably physically correct (an imbalance fault sagging pack voltage should
+  eventually read pack-weak) but **undesigned**. Harmless for the demo (EV-0006 is already red on
+  P1A15; a second DTC chip does not change status). The honest open question is a Phase-2 decision:
+  should fault profiles be single-DTC by construction (each owns exactly one trigger field), or is
+  an incidental second DTC acceptable when physically coherent? Flagged for that decision, not
+  patched silently. (DISTINCT from Finding #2 below: this is about a profile's *designed DTC
+  scope*, not a missing value ceiling — even with a temperature/voltage ceiling, the sag would
+  still cross 315.)
+
+- **OPEN / FLAGGED (Finding #2 — unbounded fault-profile ramps have no physical ceiling; do NOT
+  fix now, same "unbounded live run exposes what bounded tests didn't" root cause as the P0A1B
+  finding):** the frozen Phase-2 profiles ramp without bound, so a long live run produces
+  nonphysical *values*: `temperature` into the thousands °C (ThermalRunawayPrecursor `+0.4·t`,
+  CoolantBlockage, InverterDegradation), `inverter_efficiency` negative (`−0.0008·t`), and
+  `CellImbalance`'s `pack_voltage` driven far negative (`−0.05·t`, ~180 V at t=3000). Harmless for
+  the demo (the frontend auto-scales every sparkline; affected cards are already red on their
+  primary fault). Whether the profiles deserve physical ceilings (clamp temperature, floor
+  efficiency at 0, etc.) is a Phase-2 *profile* change — flagged for a deliberate decision, not
+  patched here.
+
 - **OPEN (Phase 5 decision — do NOT act on now; it's a detector change, out of scope):** z-score
   `detect_anomalies` output is raw/unpersisted, so a healthy fleet shows **~5 spurious anomaly
   flags per vehicle per 600 ticks** (the 3-sigma tail × 3 fields). This is the production-noise

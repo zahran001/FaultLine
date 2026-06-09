@@ -31,14 +31,16 @@ Then open http://127.0.0.1:5173 — at tick ~80 the fleet is mostly green with o
 amber card (EV-0005). To stop: `Ctrl+C` in each terminal (or kill the listeners on
 ports 8000 and 5173).
 
-> **Start the backend fresh for the demo.** The seeded roster
-> (`dashboard_config.DEMO_FLEET`) is staged for the **first ~minute** of ticks: at
+> **The demo holds up on a long-running server (no restart required).** The seeded roster
+> (`dashboard_config.DEMO_FLEET`) stages its spread over the **first ~minute** of ticks: at
 > tick ~80 the fleet reads mostly green, EV-0005 holds **amber** (trend-only), and
-> EV-0004/0007 light **red** in sequence. The backend's live loop runs forever, and
-> over thousands of ticks the seeded-healthy vehicles eventually trip a *real* hard
-> DTC (P0A1B — pack voltage sags under 315 V as SOC drains far past the demo window).
-> That's correct backend behavior, not a frontend bug — but it means a long-running
-> server no longer shows the intended green/amber/red spread. Restart it to replay.
+> EV-0004/0007 light **red** in sequence. The backend's live loop runs forever — and a SOC
+> floor (`dashboard_config.DEMO_SOC_FLOOR`) holds the seeded-healthy vehicles in their
+> validated voltage band, so they stay **green indefinitely** instead of eventually tripping a
+> drain-induced P0A1B. (That P0A1B was the unbounded-live-drain regime the bounded tests never
+> reached, not a frontend bug — see the Phase-5 P0A1B resolution in `CLAUDE.md`.) Starting the
+> backend fresh is still the cleanest way to watch the cascade from t=0, but it is no longer
+> *required* for the fleet to read correctly.
 
 ## The three views
 
