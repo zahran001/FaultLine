@@ -43,8 +43,9 @@ expects. Keep it this way.
   Never pass `locals()` (it leaks `self`, `dt`, etc.).
 
 ### 5. Detection layer routing
-- **Slope detection** (15-tick window, 0.20 °C/tick threshold) for *trending* faults
-  (ThermalRunawayPrecursor, thermal side of CoolantBlockage, InverterDegradation).
+- **Slope detection** (30-tick window, 0.30 °C/tick, 3 consecutive crossings — locked in
+  `slope_detector_config.py`; the plan's 0.20/15-tick was retracted, see the record) for
+  *trending* faults (ThermalRunawayPrecursor, thermal side of CoolantBlockage, InverterDegradation).
 - **Z-score** only for *step/spike* faults. A single-window z-score is structurally
   blind to slow ramps (peaks ~2.92, never crosses 3) — see `scripts/thermal_detector_comparison.py`.
 - The thermal test asserts against the **slope** layer, not rule-based.
