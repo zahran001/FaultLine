@@ -198,21 +198,46 @@ expects. Keep it this way.
   nothing about drain. So the floor cannot move the drain physics those tests validate — the
   128/128 pass is CORROBORATING evidence, not coincidence.
 
-- **FLAGGED (Phase-2 profile-scope question — an UNDESIGNED second DTC; do NOT fix now):**
-  `CellImbalance`, a profile whose designed job is to trip P1A15 (`cell_voltage_delta > 0.05`),
-  ALSO trips **P0A1B at t≈700** via its `pack_voltage −= 0.05·t` sag (the natural drain carries the
-  baseline plus the growing sag under 315; the SOC floor only raises voltage and leaves this fire
-  tick UNCHANGED, confirming it is profile-driven, not drain). This brushes against the Phase-4
-  multi-fault discipline, which holds that fault COMBINATIONS fire correctly *because they key off
-  distinct trigger fields* — whereas here a SINGLE profile incidentally satisfies a SECOND DTC's
-  trigger. It is arguably physically correct (an imbalance fault sagging pack voltage should
-  eventually read pack-weak) but **undesigned**. Harmless for the demo (EV-0006 is already red on
-  P1A15; a second DTC chip does not change status). The honest open question is a Phase-2 decision:
-  should fault profiles be single-DTC by construction (each owns exactly one trigger field), or is
-  an incidental second DTC acceptable when physically coherent? Flagged for that decision, not
-  patched silently. (DISTINCT from Finding #2 below: this is about a profile's *designed DTC
-  scope*, not a missing value ceiling — even with a temperature/voltage ceiling, the sag would
-  still cross 315.)
+- **RESOLVED (Phase-2 design decision, settled before Phase 6 — fault profiles keep MULTI-DTC
+  behavior):** a profile may legitimately trip more than one DTC. `CellImbalance` trips P1A15
+  (its designed code, `cell_voltage_delta > 0.05`, ~t≈250) and, on a sufficiently long run,
+  **P0A1B at t≈700** via its `pack_voltage −= 0.05·t` sag (profile-driven, not drain — the SOC
+  floor only raises voltage and leaves this fire tick UNCHANGED). This is **KEPT, not "fixed".**
+  Rationale: forcing one-DTC-per-profile would contradict the **Phase-4 multi-fault discipline** —
+  the combo tests (`test_harness_expansion.py`) assert that fault COMBINATIONS fire several correct
+  DTCs *because each keys off a distinct trigger field*, using subset (`<=`) checks precisely so
+  extra DTCs are tolerated — and real faults cascade. Multi-DTC is both more realistic and
+  consistent with what is already validated; the incidental P0A1B is now **documented expected
+  behavior**, not the "undesigned" surprise the Phase-5 finding flagged. (Supersedes that flag.)
+  - **Honesty (correction-with-provenance):** the pack-voltage sag is an INDEPENDENT flat ramp
+    (`−0.05·t`), NOT derived from the cell-imbalance delta. The co-occurrence of imbalance and low
+    pack voltage is by design; the MECHANISM is simplified — two parallel linear ramps, not a
+    delta-driven coupling where the worst-cell delta physically pulls the pack terminal voltage
+    down. Recorded in the `CellImbalance` docstring (`src/fault_profiles.py`).
+  - **No test contradicts multi-DTC (verified across the whole suite — CLEAN, no test change
+    needed):** the parametrized `test_rule_based_fault_detected` uses `assert expected_dtc in
+    detected_codes` (membership, tolerant of extras); every combo assertion is subset (`<=`) or
+    `in`. The only `==`-form comparisons on code sets are NOT breaking exact-matches:
+    `test_combo_order_independent` asserts `a == b` between two orderings of the SAME composite
+    (both sides get any extra DTC identically), and `test_no_false_positives_on_healthy_vehicle`
+    asserts `rule_fires == []` on a HEALTHY (un-injected) vehicle — the false-positive guard
+    itself, which MUST stay `== []` and is unaffected by any profile's multi-DTC behavior. No
+    `set(codes) == {...}` or `len(codes) == 1` exact-match on an injected fault's DTC list exists.
+
+- **DECIDED (Phase 6 metric foundation — record ONLY, build NO metric yet): two
+  strictly-separated metrics; conflating or co-labeling them is FORBIDDEN.**
+  - **`false_positive` (STRICT):** a DTC fired on a vehicle with **NO injected fault**. It counts
+    only on genuinely-healthy vehicles. Under this definition **EV-0006 contributes ZERO false
+    positives** — both P1A15 and P0A1B fire on a genuinely-faulted vehicle. This is the metric the
+    no-FP property already guards (`test_no_false_positives_on_healthy_vehicle`, `rule_fires == []`;
+    rule-based exactly `[]` on every healthy seed). A non-zero count here is a regression.
+  - **`incidental_dtcs` (a.k.a. secondary DTCs — DISTINCT, separately named):** a DTC fired on a
+    FAULTED vehicle that is NOT that vehicle's injected/designed DTC. EV-0006's P0A1B is an
+    **incidental DTC** — a correct, expected multi-DTC cascade (per the decision above), NOT a
+    false positive. A non-zero count here is expected and healthy.
+  - These are DIFFERENT quantities measuring different things; Phase 6 must NEVER label an
+    incidental DTC a false positive, nor fold the two into one number. Both definitions are settled
+    here so Phase 6 builds on a fixed foundation — do not build either metric in this step.
 
 - **OPEN / FLAGGED (Finding #2 — unbounded fault-profile ramps have no physical ceiling; do NOT
   fix now, same "unbounded live run exposes what bounded tests didn't" root cause as the P0A1B

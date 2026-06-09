@@ -50,7 +50,26 @@ class CoolantBlockage:
 
 class CellImbalance:
     """Gradual cell drift: cell_voltage_delta creeps past the 0.05 P1A15 threshold
-    around t≈250 (why Phase 4 uses a 400-tick window). Also slowly sags pack voltage."""
+    around t≈250 (why Phase 4 uses a 400-tick window). Also slowly sags pack voltage, so
+    on a long enough run this profile ALSO trips P0A1B (pack_voltage < 315 V, ~t≈700).
+
+    MULTI-DTC BY DESIGN (decided before Phase 6 — see CLAUDE.md, "fault profiles keep
+    multi-DTC behavior"): a profile may legitimately trip more than one DTC. CellImbalance
+    trips P1A15 (its designed code) and, on a sufficiently long run, P0A1B via the pack
+    sag. This is KEPT, not "fixed": forcing one-DTC-per-profile would contradict the Phase-4
+    multi-fault discipline (the combo tests assert several correct DTCs fire at once because
+    each keys off a distinct trigger field, using subset checks that tolerate extras) and
+    real faults cascade — so multi-DTC is both more realistic and consistent with what is
+    already validated. The incidental P0A1B is therefore documented EXPECTED behavior, not a
+    latent surprise. For metrics it is an "incidental/secondary DTC", NEVER a false positive
+    (a false positive is a DTC on an UN-injected vehicle; EV-0006 is genuinely faulted).
+
+    HONEST about the mechanism (correction-with-provenance): the pack-voltage sag is an
+    INDEPENDENT flat ramp (`-0.05 * t`), NOT derived from the cell-imbalance delta. The
+    co-occurrence of imbalance and low pack voltage is intentional, but the coupling is
+    SIMPLIFIED — two parallel linear ramps, not a delta-driven model where the worst-cell
+    delta physically pulls the pack terminal voltage down. A higher-fidelity profile would
+    couple them; this models the symptom co-occurrence, not the underlying circuit."""
 
     def apply(self, reading, t):
         return {
