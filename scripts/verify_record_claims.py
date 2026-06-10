@@ -1,15 +1,25 @@
 """Verify the concrete numeric claims going into README_PROJECT_RECORD.md's Phase 5
 record against running code. Read-only; prints PASS/FAIL per claim.
 
-Run: cd src && PYTHONPATH=. ../.venv/Scripts/python.exe ../scripts/verify_record_claims.py
+Run (from the repo root):  .venv/Scripts/python.exe scripts/verify_record_claims.py
+
+Flat imports (no package) are resolved by putting src/ on sys.path below — the same
+bootstrap the phase6_checkpoint*.py scripts use, so this runs from anywhere. (pytest gets
+src/ via pyproject's pythonpath instead; neither changes the modules' bare-import style or
+adds a package, per the CLAUDE.md flat-import contract.)
 """
 
-import dashboard_config as cfg
-import slope_detector_config as slope
-from simulator import VehicleSimulator
-from diagnostic_engine import RuleBasedDiagnostics, StatisticalDiagnostics
-from event_tracker import DTCEventTracker, SOURCE_ZSCORE
-import api
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+import dashboard_config as cfg  # noqa: E402
+import slope_detector_config as slope  # noqa: E402
+from simulator import VehicleSimulator  # noqa: E402
+from diagnostic_engine import RuleBasedDiagnostics, StatisticalDiagnostics  # noqa: E402
+from event_tracker import DTCEventTracker, SOURCE_ZSCORE  # noqa: E402
+import api  # noqa: E402
 
 SEEDS = [0, 1, 7, 42, 99, 314, 2718, 31415]
 TICKS = 600
