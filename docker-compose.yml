@@ -1,0 +1,68 @@
+# Phase 6 — reproducible observability stack for FaultLine.
+#
+# Brings up three containers: an OpenTelemetry Collector, Prometheus (metrics store +
+# PromQL), and Grafana (provisioned datasource + the four-panel FaultLine dashboard).
+#
+# The FaultLine BACKEND is NOT containerised — it runs on the Windows host (Git Bash):
+#     uvicorn api_telemetry:app --host 0.0.0.0 --port 8000     # from src/, or with --app-dir src
+# and PUSHES OTLP/HTTP metrics to the collector at localhost:4318 (a published container
+# port that Docker Desktop bridges host->container). Push avoids any container->host
+# scrape across the Windows boundary.
+#
+# Data flow:  backend (host) --OTLP/HTTP:4318--> collector --:8889 scrape--> Prometheus
+#             --PromQL:9090--> Grafana (:3000)
+#
+# Bring up:   docker compose up -d
+# Tear down:  docker compose down            (add -v to drop the Grafana volume)
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: faultline-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC  (host backend may push here)
+      - "4318:4318"   # OTLP HTTP  (host backend pushes here by default)
+      - "8889:8889"   # Prometheus scrape endpoint exposed by the collector
+    networks: [faultline]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: faultline-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=2h"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"   # PromQL / UI (handy for host-side verification)
+    depends_on: [otel-collector]
+    networks: [faultline]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: faultline-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Anonymous viewing so the demo dashboard opens with no login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-storage:/var/lib/grafana
+    ports:
+      - "3000:3000"   # Grafana UI -> http://localhost:3000
+    depends_on: [prometheus]
+    networks: [faultline]
+
+networks:
+  faultline:
+    driver: bridge
+
+volumes:
+  grafana-storage:

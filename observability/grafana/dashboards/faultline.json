@@ -1,0 +1,203 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": true,
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["faultline", "phase6"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "FaultLine — Diagnostic Observability",
+  "uid": "faultline-phase6",
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "1 · Diagnostic-run latency p99 (ms) — target < 200 ms",
+      "description": "p99/p50 of RuleBasedDiagnostics.run() per diagnostic run, from the OTel histogram. The 200 ms target line is the C3 honesty check.",
+      "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 200 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faultline_engine_run_duration_ms_bucket[1m])))",
+          "legendFormat": "p99 (fleet)"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(faultline_engine_run_duration_ms_bucket[1m])))",
+          "legendFormat": "p50 (fleet)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "2 · False positive vs incidental DTCs (fleet-wide) — STRICT split",
+      "description": "Two SEPARATELY-NAMED series (C2). false_positive = rule DTC on a vehicle with NO injected fault (must stay 0). incidental = non-injected DTC on a faulted vehicle (EV-0006's P0A1B). NEVER conflated.",
+      "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "false_positive (strict)" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "incidental (expected, NOT a false positive)" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "sum(faultline_false_positive_dtc_total) or on() vector(0)",
+          "legendFormat": "false_positive (strict)"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "sum(faultline_incidental_dtc_total) or on() vector(0)",
+          "legendFormat": "incidental (expected, NOT a false positive)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "3 · Detection latency (ticks): injection → first DTC emission",
+      "description": "READ from the event record (detection_latency_ticks = raw_first_fire_at − injected_at), never recomputed (C1). One bar per first detection (vehicle · DTC/field · detector).",
+      "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "continuous-GrYlRd" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "faultline_detection_latency_ticks_sum / faultline_detection_latency_ticks_count",
+          "legendFormat": "{{vehicle}} · {{dtc}} ({{source}})"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "4 · Active fault count over time (tracker open-events — Phase 5 SSoT)",
+      "description": "len(tracker.open_events()) per vehicle plus the fleet total. Reads the single-source-of-truth open-event set (C5), not a re-derived per-tick count.",
+      "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "fillOpacity": 6,
+            "showPoints": "never",
+            "stacking": { "mode": "none", "group": "A" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "fleet total" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 3 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "faultline_active_fault_count",
+          "legendFormat": "{{vehicle}}"
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "faultline-prometheus" },
+          "expr": "sum(faultline_active_fault_count)",
+          "legendFormat": "fleet total"
+        }
+      ]
+    }
+  ]
+}
