@@ -225,8 +225,12 @@ expects. Keep it this way.
     itself, which MUST stay `== []` and is unaffected by any profile's multi-DTC behavior. No
     `set(codes) == {...}` or `len(codes) == 1` exact-match on an injected fault's DTC list exists.
 
-- **DECIDED (Phase 6 metric foundation — record ONLY, build NO metric yet): two
-  strictly-separated metrics; conflating or co-labeling them is FORBIDDEN.**
+- **BUILT (Phase 6 — these definitions are now implemented; originally "record ONLY"): two
+  strictly-separated metrics; conflating or co-labeling them is FORBIDDEN.** Implemented in
+  `src/telemetry.py` (`classify_rule_event`) and emitted as the two distinct counters
+  `faultline_false_positive_dtc_total` / `faultline_incidental_dtc_total`; demonstrated live
+  (false_positive=0, incidental=1 for EV-0006's P0A1B). The "do not build either metric in this
+  step" line below applied to the foundation step only — Phase 6 has since built them as specified.
   - **`false_positive` (STRICT):** a DTC fired on a vehicle with **NO injected fault**. It counts
     only on genuinely-healthy vehicles. Under this definition **EV-0006 contributes ZERO false
     positives** — both P1A15 and P0A1B fire on a genuinely-faulted vehicle. This is the metric the

@@ -21,16 +21,18 @@ decisions that were already settled (and validated against running code).
 | 3 | Diagnostic engine — rule-based + statistical (z-score, slope) | Complete, committed |
 | 4 | Pytest harness — base (9) + expansion (42 harness cases) | Complete, committed |
 | 5 | FastAPI backend (live loop + DTCEventTracker + 4 endpoints) + React dashboard (3 views) | Complete, committed |
-| 6 | OpenTelemetry + Grafana observability | Next |
+| 6 | OTel + Grafana observability (collector + Prometheus + Grafana; 4 live metrics) | Complete |
 
-**Test suite:** **128 tests total.** Two distinct figures, kept distinct on
+**Test suite:** **137 tests total.** Two distinct figures, kept distinct on
 purpose: the **42** end-to-end harness cases (`test_diagnostic_engine.py` 9 base +
 `test_harness_expansion.py` 33 expansion — what the plan's "9 → 40+" tracks) are
-**unchanged**. The full suite grew from 100 to **128** with Phase 5's **28** new
+**unchanged**. The full suite grew from 100 to 128 with Phase 5's **28** new
 tests — **12** API endpoint/schema (`test_api.py`) + **16** DTCEventTracker /
-z-score-smoothing (`test_event_tracker.py`) — which are integration/unit tests, not
-harness cases. Breakdown: 42 harness + 58 Phases 0–4 unit/contract/calibration + 28
-Phase 5 = 128.
+z-score-smoothing (`test_event_tracker.py`) — then to **137** with Phase 6's **9**
+metric-foundation tests (`test_telemetry.py`: the strict false_positive/incidental
+split + the latency-is-read guard). All Phase 5/6 additions are integration/unit
+tests, not harness cases. Breakdown: 42 harness + 58 Phases 0–4 unit/contract/
+calibration + 28 Phase 5 + 9 Phase 6 = 137.
 
 ---
 
@@ -472,12 +474,85 @@ full frozen response schemas live in `docs/phase5_plan.md`.
   no test contradicts multi-DTC (the parametrized rule test uses `in`; combos use `<=`) —
   clean, no test change.
 
+### Phase 6 — OpenTelemetry + Grafana observability
+
+A reproducible `docker compose` stack (OTel Collector + Prometheus + Grafana) renders four
+live metrics fed by OTel instrumentation of the running backend. **Instrumentation is pure
+WRAPPING — the Phase 0–5 engine, FleetManager, `api.py`, and every locked config are at a ZERO
+diff.** Files: `src/telemetry.py` (pure measurement foundation + OTel wiring),
+`src/api_telemetry.py` (instrumented entrypoint), `docker-compose.yml`, `observability/*`,
+`scripts/phase6_checkpoint1.py`, `scripts/phase6_checkpoint2_p99.py`. Tests:
+`tests/test_telemetry.py` (9). Four metrics: `faultline_engine_run_duration_ms` (histogram,
+per vehicle), `faultline_false_positive_dtc_total` / `faultline_incidental_dtc_total` (two
+distinct counters), `faultline_detection_latency_ticks` (histogram), `faultline_active_fault_count`
+(observable gauge).
+
+**Decisions / deviations:**
+
+- **Wrap-only via a new entrypoint (C4).** `api_telemetry:app` imports `api.app`, grabs its live
+  `FleetManager` off `app.state.fleet`, and decorates `rule_engine.run` (timing) + `tick_all`
+  (edge-recording), and registers an observable gauge — all at import, before the lifespan tick
+  loop starts. `uvicorn api:app` is byte-identical to Phase 5; the suite imports `api`, never
+  `api_telemetry`, so it never starts an exporter or needs a collector. **Verified: the only
+  modified tracked file is `requirements.txt` (added the OTLP HTTP exporter); every frozen
+  engine/Phase-5 file is untouched** (`git diff` guard over the 10 frozen modules returns empty).
+
+- **Detection latency is READ, never recomputed (C1).** Metric 3 reads the event's stored
+  `detection_latency_ticks` (= `raw_first_fire_at − injected_at`, computed once by the
+  DTCEventTracker at open time). Confirmed live: the exported series carry the EXACT Phase-5
+  numbers (P0C73=21, P0A78=54, P1A15=188, EV-0006 incidental P0A1B=680, slope-temperature
+  27/84/96, z-score=10). `telemetry.verify_latency_is_read` proves the stored value equals
+  `raw_first_fire_at − injected_at`; no fresh latency is computed anywhere in the telemetry layer.
+
+- **Two strictly-separated metrics, never conflated (C2).** `classify_rule_event` routes each rule
+  DTC to {designed / incidental / false_positive}: a DTC on an un-injected vehicle is a
+  false_positive; a non-designed DTC on a faulted vehicle is incidental; the vehicle's own designed
+  DTC is neither. Confirmed live: `false_positive = 0` fleet-wide, `incidental = 1` (EV-0006's
+  P0A1B). The profile→designed-DTC map lives in `telemetry.py` with provenance from the
+  `fault_profiles` docstrings and self-validates against the registry at import (a typo can't
+  silently misclassify).
+
+- **First-occurrence dedupe (a long-run finding, same root cause as the P0A1B/Finding-#2 family).**
+  Over a long live run a detection legitimately FLICKERS — the slope detector on an ever-rising ramp
+  dips below threshold on I²R noise and re-opens a fresh event with its own, much larger,
+  `raw_first_fire_at − injected_at`. Those re-opens are RE-detections, not the fault's detection
+  latency. The edge-recorder records each metric ONCE per natural key (latency: first per
+  vehicle+source+field; FP/incidental: first per vehicle+DTC) — the same distinct-occurrence
+  semantics the Checkpoint-1 script used. Without it the latency histogram and the counters would be
+  skewed/inflated by flicker (e.g. EV-0005 temperature alone re-opened at raw-fire 32/367/451/…).
+
+- **Baseline-before, instrumented-after p99 (C3) — overhead SURFACED, not hidden.** Bare
+  `RuleBasedDiagnostics.run()` p99 = **0.0083 ms** (200k samples, no OTel). Instrumented
+  (run + `histogram.record()`) p99 = **0.0151 ms** — instrumentation roughly doubles the per-call
+  cost (~+0.007 ms), and the absolute p99 stays **~13,000× under the 200 ms target**. Live,
+  end-to-end under asyncio + the periodic export thread, the exported histogram's p99 = **0.099 ms**
+  (noisier but still ~2000× under target). **Honest finding: 200 ms was never tight for this
+  workload** — the engine is a ~microsecond loop over 8 DTCs; the metric's value is regression
+  detection, not headroom.
+
+- **Stack shape: collector + Prometheus + Grafana (THREE services, not two).** The done-condition
+  named "collector + Grafana," but Grafana needs a PromQL query API the collector alone does not
+  provide. Prometheus is the necessary metrics store/glue: collector `prometheus` exporter (:8889) →
+  Prometheus scrape → Grafana. Pinned images (`otel/opentelemetry-collector-contrib:0.115.1`,
+  `prom/prometheus:v2.55.1`, `grafana/grafana:11.4.0`); the Prometheus datasource and the four-panel
+  dashboard are Grafana-provisioned. `docker compose up -d` brought the whole stack up clean from a
+  cold pull.
+
+- **Networking: host backend PUSHES OTLP (no container→host scrape).** The backend runs on the
+  Windows host and pushes OTLP/HTTP to the collector's published `localhost:4318` (Docker Desktop
+  bridges host→container). Push side-steps the container→host reachability problem a pull/scrape
+  model hits across the Windows boundary. The exporter is best-effort: with the collector down the
+  backend still serves (export failures are logged and retried, never fatal — observed during the
+  pre-stack import smoke test).
+
 ---
 
 ## Open items / decisions deferred to later phases
 
-- **Phase 6 — observability (OpenTelemetry + Grafana).** The next phase: instrument the
-  live loop / engine and surface metrics. Builds on the two metric definitions below.
+- **[DONE — Phase 6] Observability (OpenTelemetry + Grafana).** Instrumented the live loop /
+  engine (wrap-only) and surfaced four metrics through a collector + Prometheus + Grafana stack.
+  See the Phase 6 section above. Built on the two metric definitions below (now implemented in
+  `src/telemetry.py`).
 - **[Parked] Fault-profile physical ceilings (Finding #2).** The frozen Phase-2 profiles
   ramp without bound, so a long live run produces nonphysical *values*: `temperature` into
   the thousands °C, `inverter_efficiency` negative, `CellImbalance`'s `pack_voltage` far
@@ -485,13 +560,14 @@ full frozen response schemas live in `docs/phase5_plan.md`.
   on their primary fault). Whether profiles deserve physical ceilings is a Phase-2 *profile*
   change — a deliberate decision, not patched. Same "unbounded live run exposes what bounded
   tests didn't" root cause as the P0A1B finding.
-- **[Decided, build pending] Phase 6 metric foundation — two strictly-separated metrics.**
-  `false_positive` (STRICT) = a DTC fired on a vehicle with NO injected fault (so EV-0006
-  contributes ZERO — both its DTCs fire on a genuinely-faulted vehicle); this is what the
-  no-FP guard already measures. `incidental_dtcs` (secondary) = a non-injected DTC on a
-  FAULTED vehicle (EV-0006's P0A1B). Distinct, separately named, NEVER conflated (see
-  invariant 9). The definitions are settled so Phase 6 builds on a fixed foundation; no
-  metric is built yet.
+- **[BUILT — Phase 6] Metric foundation — two strictly-separated metrics.** `false_positive`
+  (STRICT) = a DTC fired on a vehicle with NO injected fault (so EV-0006 contributes ZERO — both
+  its DTCs fire on a genuinely-faulted vehicle); this is what the no-FP guard already measures.
+  `incidental_dtcs` (secondary) = a non-injected DTC on a FAULTED vehicle (EV-0006's P0A1B).
+  Distinct, separately named, NEVER conflated (see invariant 9). Implemented in
+  `telemetry.classify_rule_event` and emitted as the two distinct counters
+  `faultline_false_positive_dtc_total` / `faultline_incidental_dtc_total`; demonstrated live
+  (false_positive=0, incidental=1) at the Phase 6 checkpoints.
 - **`nominal_cell_voltage_mean` (3.5393)** is likely unused at baseline (the simulator
   interpolates voltage from the curve directly, per invariant 3). Kept as a documented
   reference value; revisit only if a consumer appears.

@@ -1,0 +1,13 @@
+# Grafana datasource provisioning — the Prometheus service as the default source.
+# Fixed uid so the provisioned dashboard can reference it deterministically.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: faultline-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
