@@ -1,0 +1,21 @@
+{
+    "nominal_cell_voltage_mean": 3.5393,
+    "nominal_cell_voltage_std": 0.0178,
+    "thermal_rise_coefficient": 0.000981,
+    "discharge_curve_soc": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+    ],
+    "discharge_curve_voltage": [
+        3.3049,
+        3.3789,
+        3.4904,
+        3.5849,
+        3.7251,
+        4.1892
+    ]
+}

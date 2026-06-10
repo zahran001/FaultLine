@@ -23,16 +23,19 @@ decisions that were already settled (and validated against running code).
 | 5 | FastAPI backend (live loop + DTCEventTracker + 4 endpoints) + React dashboard (3 views) | Complete, committed |
 | 6 | OTel + Grafana observability (collector + Prometheus + Grafana; 4 live metrics) | Complete |
 
-**Test suite:** **137 tests total.** Two distinct figures, kept distinct on
+**Test suite:** **142 tests total.** Two distinct figures, kept distinct on
 purpose: the **42** end-to-end harness cases (`test_diagnostic_engine.py` 9 base +
 `test_harness_expansion.py` 33 expansion — what the plan's "9 → 40+" tracks) are
 **unchanged**. The full suite grew from 100 to 128 with Phase 5's **28** new
 tests — **12** API endpoint/schema (`test_api.py`) + **16** DTCEventTracker /
 z-score-smoothing (`test_event_tracker.py`) — then to **137** with Phase 6's **9**
 metric-foundation tests (`test_telemetry.py`: the strict false_positive/incidental
-split + the latency-is-read guard). All Phase 5/6 additions are integration/unit
-tests, not harness cases. Breakdown: 42 harness + 58 Phases 0–4 unit/contract/
-calibration + 28 Phase 5 + 9 Phase 6 = 137.
+split + the latency-is-read guard), then to **142** with **5** calibration-cache
+guard tests (`test_calibration_cache.py`: the committed `calibration_cache.json` that
+lets CI build without the gitignored 577 MB NASA dataset — locked shape, no-drift-from-
+data, and the data-absent fallback path). All Phase 5/6 additions are integration/unit
+tests, not harness cases. Breakdown: 42 harness + 63 Phases 0–4 unit/contract/
+calibration + 28 Phase 5 + 9 Phase 6 = 142.
 
 ---
 

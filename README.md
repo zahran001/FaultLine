@@ -31,12 +31,12 @@ pip install -r requirements.txt        # numpy, fastapi, uvicorn, pytest, opente
 ### 2. Test — the diagnostic harness + unit/contract suites
 
 ```bash
-pytest                                 # 137 tests, from the repo root
+pytest                                 # 142 tests, from the repo root
 ```
 
 The core correctness check: every harness case injects a fault through the **real**
 simulator, feeds readings to the engine, and asserts the right DTC (or slope detection)
-fires. Composition of the 137:
+fires. Composition of the 142:
 
 - **42-case end-to-end harness** — 9 base (6 rule-based inject→DTC, thermal slope, no-false-positives, detection latency) + 33 expansion (21 boundary: just-past fires / exactly-at and just-short do **not**, full pipeline; 8 multi-fault combos; 4 per-fault rate variants).
 - **+ 58** registry/contract, simulator, fault-profile, and detector-calibration tests.

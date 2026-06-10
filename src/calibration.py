@@ -16,6 +16,7 @@ the discharge curve is TWO PARALLEL ARRAYS (soc / voltage), not a list of pairs,
 because np.interp(x, xp, fp) consumes it that way downstream in the simulator.
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,11 @@ import pandas as pd
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 METADATA_CSV = DATA_DIR / "metadata.csv"
 CYCLE_DIR = DATA_DIR / "data"
+
+# Derived constants cached next to the source (committed, unlike the 577 MB
+# gitignored data/ dataset) so environments without the raw NASA data — CI in
+# particular — can load the locked calibration. See _resolve_calibration.
+CALIBRATION_CACHE = Path(__file__).resolve().parent / "calibration_cache.json"
 
 BATTERY_ID = "B0005"
 N_EARLY_CYCLES = 5  # cycles closest to full health
@@ -186,11 +192,47 @@ def _build_calibration() -> dict:
     }
 
 
-CALIBRATION = _build_calibration()
+def _write_calibration_cache(
+    calibration: dict, cache_path: Path = CALIBRATION_CACHE
+) -> None:
+    """Persist the derived constants so they can be loaded without the raw NASA
+    dataset. Regenerate by running this module directly (`python calibration.py`)."""
+    cache_path.write_text(json.dumps(calibration, indent=4) + "\n")
+
+
+def _load_cached_calibration(cache_path: Path = CALIBRATION_CACHE) -> dict:
+    return json.loads(cache_path.read_text())
+
+
+def _resolve_calibration() -> dict:
+    """Build from the raw NASA dataset when present (the source of truth — keeps
+    local/dev behavior byte-identical to before this cache existed); otherwise
+    fall back to the committed cache so environments without the 577 MB dataset
+    (CI) still get the locked constants.
+
+    The cache is regenerated explicitly via `python calibration.py`, and
+    tests/test_calibration_cache.py guards it against drifting from the data.
+    """
+    if METADATA_CSV.exists():
+        return _build_calibration()
+    if CALIBRATION_CACHE.exists():
+        return _load_cached_calibration()
+    raise FileNotFoundError(
+        f"Calibration requires either the NASA dataset at {METADATA_CSV} or the "
+        f"prebuilt cache at {CALIBRATION_CACHE}; found neither. Run "
+        f"`python src/calibration.py` with the dataset present to generate the cache."
+    )
+
+
+CALIBRATION = _resolve_calibration()
 
 
 if __name__ == "__main__":
-    import json
+    # Regenerate the committed cache from the raw dataset so CI (which lacks the
+    # 577 MB NASA data) loads identical constants. No-op without the dataset.
+    if METADATA_CSV.exists():
+        _write_calibration_cache(_build_calibration())
+        print(f"Wrote cache -> {CALIBRATION_CACHE}\n")
 
     print(f"Battery: {BATTERY_ID}  (first {N_EARLY_CYCLES} discharge cycles)\n")
     print(json.dumps(CALIBRATION, indent=4))
